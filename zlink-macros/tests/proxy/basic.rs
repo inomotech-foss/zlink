@@ -17,7 +17,7 @@ async fn proxy_no_in_or_out_params() {
 
     // Test that methods returning `()` should accept empty {} response and empty parameters.
     let responses = [r#"{}"#, r#"{parameters: {}}"#];
-    let socket = MockSocket::new(&responses);
+    let socket = MockSocket::with_responses(&responses);
 
     let mut conn = Connection::new(socket);
 
@@ -36,7 +36,7 @@ async fn proxy_oneway_method() {
 
     // Oneway methods don't expect a response, so we provide an empty response list
     let responses: &[&str] = &[];
-    let socket = MockSocket::new(responses);
+    let socket = MockSocket::with_responses(responses);
 
     let mut conn = Connection::new(socket);
 
@@ -73,7 +73,7 @@ async fn proxy_parameter_rename() {
 
     // Mock response with the expected parameter names in the request
     let responses = json!({"parameters": {"id": 123}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
 
     let mut conn = Connection::new(socket);
 

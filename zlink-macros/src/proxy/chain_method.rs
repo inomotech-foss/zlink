@@ -94,6 +94,11 @@ pub(super) fn generate_chain_method(
     );
 
     // Generate the implementation method
+    #[cfg(feature = "std")]
+    let chain_call = quote! { self.chain_call(&call, vec![]) };
+    #[cfg(not(feature = "std"))]
+    let chain_call = quote! { self.chain_call(&call) };
+
     let impl_method = quote! {
         fn #chain_method_name<#all_generics>(
             &'c mut self,
@@ -104,7 +109,7 @@ pub(super) fn generate_chain_method(
         #chain_where
         {
             #method_call_creation
-            self.chain_call(&call)
+            #chain_call
         }
     };
 

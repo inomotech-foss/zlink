@@ -38,8 +38,9 @@ use super::{Error, Info, InterfaceDescription};
 /// pin_mut!(replies);
 ///
 /// // Process each reply in the order they were chained
-/// while let Some(reply) = replies.next().await {
-///     match reply??.parameters().unwrap() {
+/// while let Some(result) = replies.next().await {
+///     let (reply, _fds) = result?;
+///     match reply?.parameters().unwrap() {
 ///         Reply::Info(info) => {
 ///             println!("Service: {} v{} by {}", info.product, info.version, info.vendor);
 ///             println!("URL: {}", info.url);
@@ -81,8 +82,9 @@ use super::{Error, Info, InterfaceDescription};
 /// let combined_replies = combined_chain.send().await?;
 /// pin_mut!(combined_replies);
 ///
-/// while let Some(reply) = combined_replies.next().await {
-///     match reply? {
+/// while let Some(result) = combined_replies.next().await {
+///     let (reply, _fds) = result?;
+///     match reply {
 ///         Ok(reply) => {
 ///             match reply.parameters().unwrap() {
 ///                 CombinedReply::VarlinkService(varlink_reply) => match varlink_reply {
@@ -106,6 +108,7 @@ use super::{Error, Info, InterfaceDescription};
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(feature = "std")]
 #[proxy(
     interface = "org.varlink.service",
     crate = "crate",
@@ -150,7 +153,7 @@ mod tests {
             r#"{"parameters":{"vendor":"Test","product":"TestProduct","version":"1.0","url":"https://test.com","interfaces":["org.varlink.service"]}}"#,
             r#"{"parameters":{"description":"interface org.varlink.service {}"}}"#,
         ];
-        let socket = MockSocket::new(&responses);
+        let socket = MockSocket::with_responses(&responses);
         let mut conn = Connection::new(socket);
 
         // Use the provided Reply enum from the varlink service module
@@ -172,7 +175,7 @@ mod tests {
             r#"{"parameters":{"description":"interface org.varlink.service {}"}}"#,
             r#"{"parameters":{"vendor":"Test","product":"TestProduct","version":"1.0","url":"https://test.com","interfaces":["org.varlink.service"]}}"#,
         ];
-        let socket = MockSocket::new(&responses);
+        let socket = MockSocket::with_responses(&responses);
         let mut conn = Connection::new(socket);
 
         use super::{super::Reply, Error};
@@ -188,7 +191,8 @@ mod tests {
         pin_mut!(replies);
 
         // Read first reply (GetInfo)
-        let first_reply = replies.next().await.unwrap()?.unwrap();
+        let (first_reply, _fds) = replies.next().await.unwrap()?;
+        let first_reply = first_reply.unwrap();
         match first_reply.parameters().unwrap() {
             Reply::Info(info) => {
                 assert_eq!(info.vendor, "Test");
@@ -201,7 +205,8 @@ mod tests {
         }
 
         // Read second reply (GetInterfaceDescription)
-        let second_reply = replies.next().await.unwrap()?.unwrap();
+        let (second_reply, _fds) = replies.next().await.unwrap()?;
+        let second_reply = second_reply.unwrap();
         match second_reply.parameters().unwrap() {
             Reply::InterfaceDescription(desc) => {
                 assert_eq!(desc.as_raw().unwrap(), "interface org.varlink.service {}");
@@ -210,7 +215,8 @@ mod tests {
         }
 
         // Read third reply (GetInfo again)
-        let third_reply = replies.next().await.unwrap()?.unwrap();
+        let (third_reply, _fds) = replies.next().await.unwrap()?;
+        let third_reply = third_reply.unwrap();
         match third_reply.parameters().unwrap() {
             Reply::Info(info) => {
                 assert_eq!(info.vendor, "Test");

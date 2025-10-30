@@ -2178,6 +2178,7 @@ dependencies = [
  "indexmap",
  "itoa",
  "pin-project-lite",
+ "rustix",
  "ryu",
  "serde",
  "serde-prefix-all",

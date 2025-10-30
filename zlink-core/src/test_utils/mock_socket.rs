@@ -5,18 +5,30 @@
 //! connections.
 
 use crate::connection::socket::{ReadHalf, Socket, WriteHalf};
+#[cfg(feature = "std")]
+use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+#[cfg(feature = "std")]
+use rustix::fd::{BorrowedFd, OwnedFd};
 
 /// Mock socket implementation for testing.
 ///
 /// This socket pre-loads response data and allows tests to verify what was written.
 /// Responses should be provided as individual strings, and the mock will automatically
 /// add null byte separators between them.
+///
+/// In std mode, also supports file descriptor passing for testing FD-based IPC.
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct MockSocket {
     read_data: Vec<u8>,
     read_pos: usize,
+    #[cfg(feature = "std")]
+    fds: Vec<Vec<OwnedFd>>,
+    #[cfg(feature = "std")]
+    fd_index: usize,
 }
 
 impl MockSocket {
@@ -24,20 +36,39 @@ impl MockSocket {
     ///
     /// Each response string will be automatically null-terminated.
     /// An additional null byte is added at the end to mark the end of all messages.
-    pub fn new(responses: &[&str]) -> Self {
+    ///
+    /// In std mode, the `fds` parameter specifies which FDs to return for each read operation.
+    /// Use an empty vec for reads that should not return FDs.
+    pub fn new(responses: &[&str], #[cfg(feature = "std")] fds: Vec<Vec<OwnedFd>>) -> Self {
         let mut data = Vec::new();
 
         for response in responses {
             data.extend_from_slice(response.as_bytes());
             data.push(b'\0');
         }
-        // Add an extra null byte to mark end of all messages
+        // Add an extra null byte to mark end of all messages.
         data.push(b'\0');
 
         Self {
             read_data: data,
             read_pos: 0,
+            #[cfg(feature = "std")]
+            fds,
+            #[cfg(feature = "std")]
+            fd_index: 0,
         }
+    }
+
+    /// Create a mock socket with responses and no file descriptors.
+    ///
+    /// This is a convenience method for tests that don't use FDs, working
+    /// uniformly in both std and no_std modes.
+    pub fn with_responses(responses: &[&str]) -> Self {
+        Self::new(
+            responses,
+            #[cfg(feature = "std")]
+            vec![],
+        )
     }
 }
 
@@ -50,9 +81,15 @@ impl Socket for MockSocket {
             MockReadHalf {
                 data: self.read_data,
                 pos: self.read_pos,
+                #[cfg(feature = "std")]
+                fds: self.fds,
+                #[cfg(feature = "std")]
+                fd_index: self.fd_index,
             },
             MockWriteHalf {
                 written: Vec::new(),
+                #[cfg(feature = "std")]
+                fds_written: RefCell::new(Vec::new()),
             },
         )
     }
@@ -64,6 +101,10 @@ impl Socket for MockSocket {
 pub struct MockReadHalf {
     data: Vec<u8>,
     pos: usize,
+    #[cfg(feature = "std")]
+    fds: Vec<Vec<OwnedFd>>,
+    #[cfg(feature = "std")]
+    fd_index: usize,
 }
 
 impl MockReadHalf {
@@ -71,9 +112,41 @@ impl MockReadHalf {
     pub fn remaining_data(&self) -> &[u8] {
         &self.data[self.pos..]
     }
+
+    /// Get the number of FD sets that have been consumed (std only).
+    #[cfg(feature = "std")]
+    pub fn fds_consumed(&self) -> usize {
+        self.fd_index
+    }
 }
 
 impl ReadHalf for MockReadHalf {
+    #[cfg(feature = "std")]
+    async fn read(
+        &mut self,
+        buf: &mut [u8],
+    ) -> crate::Result<(usize, alloc::vec::Vec<std::os::fd::OwnedFd>)> {
+        let remaining = self.data.len().saturating_sub(self.pos);
+        if remaining == 0 {
+            return Ok((0, vec![]));
+        }
+
+        let to_read = remaining.min(buf.len());
+        buf[..to_read].copy_from_slice(&self.data[self.pos..self.pos + to_read]);
+        self.pos += to_read;
+
+        let fds = if self.fd_index < self.fds.len() {
+            let fds = core::mem::take(&mut self.fds[self.fd_index]);
+            self.fd_index += 1;
+            fds
+        } else {
+            vec![]
+        };
+
+        Ok((to_read, fds))
+    }
+
+    #[cfg(not(feature = "std"))]
     async fn read(&mut self, buf: &mut [u8]) -> crate::Result<usize> {
         let remaining = self.data.len().saturating_sub(self.pos);
         if remaining == 0 {
@@ -92,18 +165,71 @@ impl ReadHalf for MockReadHalf {
 #[doc(hidden)]
 pub struct MockWriteHalf {
     written: Vec<u8>,
+    #[cfg(feature = "std")]
+    fds_written: RefCell<Vec<Vec<OwnedFd>>>,
 }
 
 impl MockWriteHalf {
+    /// Create a new mock write half.
+    #[cfg(feature = "std")]
+    pub fn new() -> Self {
+        Self {
+            written: Vec::new(),
+            fds_written: RefCell::new(Vec::new()),
+        }
+    }
+
     /// Get all data that has been written to this mock.
     pub fn written_data(&self) -> &[u8] {
         &self.written
     }
+
+    /// Get all file descriptors that have been written (std only).
+    #[cfg(feature = "std")]
+    pub fn fds_written(&self) -> core::cell::Ref<'_, Vec<Vec<OwnedFd>>> {
+        self.fds_written.borrow()
+    }
+
+    /// Get the number of times FDs were written (std only).
+    #[cfg(feature = "std")]
+    pub fn fd_write_count(&self) -> usize {
+        self.fds_written.borrow().len()
+    }
+}
+
+#[cfg(feature = "std")]
+impl Default for MockWriteHalf {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WriteHalf for MockWriteHalf {
-    async fn write(&mut self, buf: &[u8]) -> crate::Result<()> {
+    async fn write(
+        &mut self,
+        buf: &[u8],
+        #[cfg(feature = "std")] fds: &[impl std::os::fd::AsFd],
+    ) -> crate::Result<()> {
         self.written.extend_from_slice(buf);
+
+        #[cfg(feature = "std")]
+        {
+            let borrowed_fds: Vec<BorrowedFd<'_>> = fds.iter().map(|f| f.as_fd()).collect();
+
+            if !borrowed_fds.is_empty() {
+                // For testing, we duplicate the FDs to take ownership.
+                // In real implementation, the OS would transfer them.
+                let owned_fds: Vec<OwnedFd> = borrowed_fds
+                    .iter()
+                    .map(|fd| {
+                        rustix::io::fcntl_dupfd_cloexec(fd, 0)
+                            .map_err(|e| crate::Error::Io(e.into()))
+                    })
+                    .collect::<crate::Result<Vec<_>>>()?;
+                self.fds_written.borrow_mut().push(owned_fds);
+            }
+        }
+
         Ok(())
     }
 }
@@ -111,22 +237,71 @@ impl WriteHalf for MockWriteHalf {
 /// Mock write half that asserts the expected write length.
 ///
 /// This is useful for testing that writes are exactly the expected size.
+/// In std mode, can also validate expected FD count.
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct TestWriteHalf {
     expected_len: usize,
+    #[cfg(feature = "std")]
+    expected_fd_count: Option<usize>,
+    #[cfg(feature = "std")]
+    write_count: usize,
 }
 
 impl TestWriteHalf {
     /// Create a new test write half that expects writes of the given length.
+    #[cfg(not(feature = "std"))]
     pub fn new(expected_len: usize) -> Self {
         Self { expected_len }
+    }
+
+    /// Create a new test write half that expects writes of the given length (std version).
+    #[cfg(feature = "std")]
+    pub fn new(expected_len: usize) -> Self {
+        Self {
+            expected_len,
+            expected_fd_count: None,
+            write_count: 0,
+        }
+    }
+
+    /// Create a new test write half expecting specific write length and FD count (std only).
+    #[cfg(feature = "std")]
+    pub fn new_with_fds(expected_len: usize, expected_fd_count: usize) -> Self {
+        Self {
+            expected_len,
+            expected_fd_count: Some(expected_fd_count),
+            write_count: 0,
+        }
+    }
+
+    /// Get the number of writes performed (std only).
+    #[cfg(feature = "std")]
+    pub fn write_count(&self) -> usize {
+        self.write_count
     }
 }
 
 impl WriteHalf for TestWriteHalf {
-    async fn write(&mut self, buf: &[u8]) -> crate::Result<()> {
+    async fn write(
+        &mut self,
+        buf: &[u8],
+        #[cfg(feature = "std")] fds: &[impl std::os::fd::AsFd],
+    ) -> crate::Result<()> {
         assert_eq!(buf.len(), self.expected_len);
+
+        #[cfg(feature = "std")]
+        {
+            let fd_count = fds.len();
+            if let Some(expected_count) = self.expected_fd_count {
+                assert_eq!(fd_count, expected_count);
+            } else {
+                assert_eq!(fd_count, 0, "Expected no FDs to be passed");
+            }
+
+            self.write_count += 1;
+        }
+
         Ok(())
     }
 }
@@ -159,8 +334,127 @@ impl CountingWriteHalf {
 }
 
 impl WriteHalf for CountingWriteHalf {
-    async fn write(&mut self, _buf: &[u8]) -> crate::Result<()> {
+    async fn write(
+        &mut self,
+        _buf: &[u8],
+        #[cfg(feature = "std")] _fds: &[impl std::os::fd::AsFd],
+    ) -> crate::Result<()> {
         self.count += 1;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use std::os::fd::AsFd;
+
+    #[tokio::test]
+    async fn mock_socket_with_fds_basic() {
+        use std::os::unix::net::UnixStream;
+
+        let (r1, _w1) = UnixStream::pair().unwrap();
+        let (r2, _w2) = UnixStream::pair().unwrap();
+
+        let fds = vec![vec![r1.into()], vec![r2.into()]];
+        let socket = MockSocket::new(&["test1", "test2"], fds);
+
+        let (mut read, _write) = socket.split();
+
+        let mut buf = [0u8; 10]; // Small buffer to force multiple reads
+        let (bytes, fds1) = read.read(&mut buf).await.unwrap();
+        assert!(bytes > 0);
+        assert_eq!(fds1.len(), 1);
+
+        let (bytes, fds2) = read.read(&mut buf).await.unwrap();
+        assert!(bytes > 0);
+        assert_eq!(fds2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_write_half_captures_fds() {
+        use std::os::unix::net::UnixStream;
+
+        let mut write = MockWriteHalf::new();
+
+        let (r1, _w1) = UnixStream::pair().unwrap();
+        let borrowed = r1.as_fd();
+
+        write.write(b"test", &[borrowed]).await.unwrap();
+
+        assert_eq!(write.written_data(), b"test");
+        assert_eq!(write.fd_write_count(), 1);
+        assert_eq!(write.fds_written().len(), 1);
+        assert_eq!(write.fds_written()[0].len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_write_half_validates_fd_count() {
+        use std::os::unix::net::UnixStream;
+
+        let mut write = TestWriteHalf::new_with_fds(4, 2);
+
+        let (r1, _w1) = UnixStream::pair().unwrap();
+        let (r2, _w2) = UnixStream::pair().unwrap();
+        let borrowed = [r1.as_fd(), r2.as_fd()];
+
+        write.write(b"test", &borrowed).await.unwrap();
+
+        assert_eq!(write.write_count(), 1);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    async fn test_write_half_panics_on_wrong_fd_count() {
+        use std::os::unix::net::UnixStream;
+
+        let mut write = TestWriteHalf::new_with_fds(4, 2);
+
+        let (r1, _w1) = UnixStream::pair().unwrap();
+        let borrowed = [r1.as_fd()];
+
+        // This should panic because we expect 2 FDs but provide 1.
+        write.write(b"test", &borrowed).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mock_read_half_multiple_fds_per_read() {
+        use std::os::unix::net::UnixStream;
+
+        let (r1, _w1) = UnixStream::pair().unwrap();
+        let (r2, _w2) = UnixStream::pair().unwrap();
+        let (r3, _w3) = UnixStream::pair().unwrap();
+
+        let fds = vec![vec![r1.into(), r2.into(), r3.into()]];
+        let socket = MockSocket::new(&["test"], fds);
+
+        let (mut read, _write) = socket.split();
+
+        let mut buf = [0u8; 1024];
+        let (bytes, fds) = read.read(&mut buf).await.unwrap();
+        assert!(bytes > 0);
+        assert_eq!(fds.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn mock_read_half_mixed_fd_and_no_fd_reads() {
+        use std::os::unix::net::UnixStream;
+
+        let (r1, _w1) = UnixStream::pair().unwrap();
+
+        let fds = vec![vec![r1.into()], vec![]];
+        let socket = MockSocket::new(&["test1", "test2"], fds);
+
+        let (mut read, _write) = socket.split();
+
+        let mut buf = [0u8; 10]; // Small buffer to force multiple reads
+
+        let (bytes, fds1) = read.read(&mut buf).await.unwrap();
+        assert!(bytes > 0);
+        assert!(!fds1.is_empty());
+
+        let (bytes, fds2) = read.read(&mut buf).await.unwrap();
+        assert!(bytes > 0);
+        assert!(fds2.is_empty());
     }
 }

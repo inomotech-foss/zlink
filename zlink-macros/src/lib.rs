@@ -411,7 +411,7 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 /// # let responses = vec![
 /// #     r#"{"parameters":{"active":true,"message":"System running"}}"#,
 /// # ];
-/// # let socket = MockSocket::new(&responses);
+/// # let socket = MockSocket::with_responses(&responses);
 /// # let mut conn = zlink::Connection::new(socket);
 /// let result = conn.get_status().await?.unwrap();
 /// assert_eq!(result.active, true);
@@ -484,7 +484,7 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 /// #     r#"{"parameters":[{"id":1,"user_id":1,"content":"My first post!"}]}"#,
 /// #     r#"{"parameters":{"id":1,"name":"Alice"}}"#,
 /// # ];
-/// # let socket = MockSocket::new(&responses);
+/// # let socket = MockSocket::with_responses(&responses);
 /// # let mut conn = zlink::Connection::new(socket);
 /// // Chain calls across both interfaces in a single batch
 /// let chain = conn
@@ -499,14 +499,15 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 ///
 /// // Process replies in order
 /// let mut reply_count = 0;
-/// while let Some(reply) = replies.try_next().await? {
-///     let reply = reply?;
+/// while let Some((reply, _fds)) = replies.try_next().await? {
 ///     reply_count += 1;
-///     match reply.parameters() {
-///         Some(BlogReply::User(user)) => assert_eq!(user.name, "Alice"),
-///         Some(BlogReply::Post(post)) => assert_eq!(post.content, "My first post!"),
-///         Some(BlogReply::Posts(posts)) => assert_eq!(posts.len(), 1),
-///         None => {} // set_value returns empty response
+///     if let Ok(response) = reply {
+///         match response.parameters() {
+///             Some(BlogReply::User(user)) => assert_eq!(user.name, "Alice"),
+///             Some(BlogReply::Post(post)) => assert_eq!(post.content, "My first post!"),
+///             Some(BlogReply::Posts(posts)) => assert_eq!(posts.len(), 1),
+///             None => {} // set_value returns empty response
+///         }
 ///     }
 /// }
 /// assert_eq!(reply_count, 4); // We made 4 calls
@@ -563,7 +564,7 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 /// #     r#"{"parameters":{"active":true,"message":"Running"}}"#,
 /// #     r#"{"parameters":{"description":"interface com.example.MyService\n..."}}"#,
 /// # ];
-/// # let socket = MockSocket::new(&responses);
+/// # let socket = MockSocket::with_responses(&responses);
 /// # let mut conn = zlink::Connection::new(socket);
 /// use varlink_service::Proxy;
 /// use zlink::varlink_service::Chain;
@@ -665,7 +666,7 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 /// # let responses = vec![
 /// #     r#"{"parameters":null}"#, // store returns empty Ok
 /// # ];
-/// # let socket = MockSocket::new(&responses);
+/// # let socket = MockSocket::with_responses(&responses);
 /// # let mut conn = zlink::Connection::new(socket);
 /// // Store a value with generic type
 /// let result = conn.store("my-key", 42i32).await?;

@@ -4,17 +4,27 @@ mod read_connection;
 pub use read_connection::ReadConnection;
 pub mod chain;
 pub mod socket;
+#[cfg(test)]
+mod tests;
 mod write_connection;
 use crate::{
     reply::{self, Reply},
     Call, Result,
 };
+#[cfg(feature = "std")]
+use alloc::vec;
 pub use chain::Chain;
 use core::{fmt::Debug, sync::atomic::AtomicUsize};
 pub use write_connection::WriteConnection;
 
 use serde::{Deserialize, Serialize};
 pub use socket::Socket;
+
+// Type alias for receive methods - std returns FDs, no_std doesn't
+#[cfg(feature = "std")]
+type RecvResult<T> = (T, Vec<std::os::fd::OwnedFd>);
+#[cfg(not(feature = "std"))]
+type RecvResult<T> = T;
 
 /// A connection.
 ///
@@ -87,11 +97,22 @@ where
     /// Sends a method call.
     ///
     /// Convenience wrapper around [`WriteConnection::send_call`].
-    pub async fn send_call<Method>(&mut self, call: &Call<Method>) -> Result<()>
+    pub async fn send_call<Method>(
+        &mut self,
+        call: &Call<Method>,
+        #[cfg(feature = "std")] fds: Vec<std::os::fd::OwnedFd>,
+    ) -> Result<()>
     where
         Method: Serialize + Debug,
     {
-        self.write.send_call(call).await
+        #[cfg(feature = "std")]
+        {
+            self.write.send_call(call, fds).await
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.write.send_call(call).await
+        }
     }
 
     /// Receives a method call reply.
@@ -99,7 +120,7 @@ where
     /// Convenience wrapper around [`ReadConnection::receive_reply`].
     pub async fn receive_reply<'r, ReplyParams, ReplyError>(
         &'r mut self,
-    ) -> Result<reply::Result<ReplyParams, ReplyError>>
+    ) -> Result<RecvResult<reply::Result<ReplyParams, ReplyError>>>
     where
         ReplyParams: Deserialize<'r> + Debug,
         ReplyError: Deserialize<'r> + Debug,
@@ -114,20 +135,25 @@ where
     pub async fn call_method<'r, Method, ReplyParams, ReplyError>(
         &'r mut self,
         call: &Call<Method>,
-    ) -> Result<reply::Result<ReplyParams, ReplyError>>
+        #[cfg(feature = "std")] fds: Vec<std::os::fd::OwnedFd>,
+    ) -> Result<RecvResult<reply::Result<ReplyParams, ReplyError>>>
     where
         Method: Serialize + Debug,
         ReplyParams: Deserialize<'r> + Debug,
         ReplyError: Deserialize<'r> + Debug,
     {
+        #[cfg(feature = "std")]
+        self.send_call(call, fds).await?;
+        #[cfg(not(feature = "std"))]
         self.send_call(call).await?;
+
         self.receive_reply().await
     }
 
     /// Receive a method call over the socket.
     ///
     /// Convenience wrapper around [`ReadConnection::receive_call`].
-    pub async fn receive_call<'m, Method>(&'m mut self) -> Result<Call<Method>>
+    pub async fn receive_call<'m, Method>(&'m mut self) -> Result<RecvResult<Call<Method>>>
     where
         Method: Deserialize<'m> + Debug,
     {
@@ -137,21 +163,43 @@ where
     /// Send a reply over the socket.
     ///
     /// Convenience wrapper around [`WriteConnection::send_reply`].
-    pub async fn send_reply<ReplyParams>(&mut self, reply: &Reply<ReplyParams>) -> Result<()>
+    pub async fn send_reply<ReplyParams>(
+        &mut self,
+        reply: &Reply<ReplyParams>,
+        #[cfg(feature = "std")] fds: Vec<std::os::fd::OwnedFd>,
+    ) -> Result<()>
     where
         ReplyParams: Serialize + Debug,
     {
-        self.write.send_reply(reply).await
+        #[cfg(feature = "std")]
+        {
+            self.write.send_reply(reply, fds).await
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.write.send_reply(reply).await
+        }
     }
 
     /// Send an error reply over the socket.
     ///
     /// Convenience wrapper around [`WriteConnection::send_error`].
-    pub async fn send_error<ReplyError>(&mut self, error: &ReplyError) -> Result<()>
+    pub async fn send_error<ReplyError>(
+        &mut self,
+        error: &ReplyError,
+        #[cfg(feature = "std")] fds: Vec<std::os::fd::OwnedFd>,
+    ) -> Result<()>
     where
         ReplyError: Serialize + Debug,
     {
-        self.write.send_error(error).await
+        #[cfg(feature = "std")]
+        {
+            self.write.send_error(error, fds).await
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.write.send_error(error).await
+        }
     }
 
     /// Enqueue a call to the server.
@@ -161,7 +209,14 @@ where
     where
         Method: Serialize + Debug,
     {
-        self.write.enqueue_call(method)
+        #[cfg(feature = "std")]
+        {
+            self.write.enqueue_call(method, vec![])
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.write.enqueue_call(method)
+        }
     }
 
     /// Flush the connection.
@@ -217,20 +272,39 @@ where
     /// let get_project = Call::new(Methods::GetProject { id: 2 });
     ///
     /// // Chain calls and send them in a batch
+    /// # #[cfg(feature = "std")]
     /// let replies = conn
-    ///     .chain_call::<Methods, User, ApiError>(&get_user)?
-    ///     .append(&get_project)?
+    ///     .chain_call::<Methods, User, ApiError>(&get_user, vec![])?
+    ///     .append(&get_project, vec![])?
     ///     .send().await?;
+    /// # #[cfg(not(feature = "std"))]
+    /// # let replies = conn
+    /// #     .chain_call::<Methods, User, ApiError>(&get_user)?
+    /// #     .append(&get_project)?
+    /// #     .send().await?;
     /// pin_mut!(replies);
     ///
     /// // Access replies sequentially - types are now fixed by the chain
-    /// let user_reply = replies.next().await.unwrap()?;
-    /// let project_reply = replies.next().await.unwrap()?;
+    /// # #[cfg(feature = "std")]
+    /// # {
+    /// let (user_reply, _fds) = replies.next().await.unwrap()?;
+    /// let (project_reply, _fds) = replies.next().await.unwrap()?;
     ///
     /// match user_reply {
     ///     Ok(user) => println!("User: {}", user.parameters().unwrap().name),
     ///     Err(error) => println!("User error: {:?}", error),
     /// }
+    /// # }
+    /// # #[cfg(not(feature = "std"))]
+    /// # {
+    /// # let user_reply = replies.next().await.unwrap()?;
+    /// # let _project_reply = replies.next().await.unwrap()?;
+    /// #
+    /// # match user_reply {
+    /// #     Ok(user) => println!("User: {}", user.parameters().unwrap().name),
+    /// #     Err(error) => println!("User error: {:?}", error),
+    /// # }
+    /// # }
     /// # Ok(())
     /// # }
     /// ```
@@ -265,23 +339,41 @@ where
     /// # let get_user = Call::new(Methods::GetUser { id: 1 });
     ///
     /// // Chain many calls (no upper limit)
-    /// let mut chain = conn.chain_call::<Methods, User, ApiError>(&get_user)?;
+    /// # #[cfg(feature = "std")]
+    /// let mut chain = conn.chain_call::<Methods, User, ApiError>(&get_user, vec![])?;
+    /// # #[cfg(not(feature = "std"))]
+    /// # let mut chain = conn.chain_call::<Methods, User, ApiError>(&get_user)?;
+    /// # #[cfg(feature = "std")]
     /// for i in 2..100 {
-    ///     chain = chain.append(&Call::new(Methods::GetUser { id: i }))?;
+    ///     chain = chain.append(&Call::new(Methods::GetUser { id: i }), vec![])?;
     /// }
+    /// # #[cfg(not(feature = "std"))]
+    /// # for i in 2..100 {
+    /// #     chain = chain.append(&Call::new(Methods::GetUser { id: i }))?;
+    /// # }
     ///
     /// let replies = chain.send().await?;
     /// pin_mut!(replies);
     ///
     /// // Process all replies sequentially - types are fixed by the chain
-    /// while let Some(user_reply) = replies.next().await {
-    ///     let user_reply = user_reply?;
+    /// # #[cfg(feature = "std")]
+    /// while let Some(result) = replies.next().await {
+    ///     let (user_reply, _fds) = result?;
     ///     // Handle each reply...
     ///     match user_reply {
     ///         Ok(user) => println!("User: {}", user.parameters().unwrap().name),
     ///         Err(error) => println!("Error: {:?}", error),
     ///     }
     /// }
+    /// # #[cfg(not(feature = "std"))]
+    /// # while let Some(result) = replies.next().await {
+    /// #     let user_reply = result?;
+    /// #     // Handle each reply...
+    /// #     match user_reply {
+    /// #         Ok(user) => println!("User: {}", user.parameters().unwrap().name),
+    /// #         Err(error) => println!("Error: {:?}", error),
+    /// #     }
+    /// # }
     /// # Ok(())
     /// # }
     /// ```
@@ -293,13 +385,19 @@ where
     pub fn chain_call<'c, Method, ReplyParams, ReplyError>(
         &'c mut self,
         call: &Call<Method>,
+        #[cfg(feature = "std")] fds: alloc::vec::Vec<std::os::fd::OwnedFd>,
     ) -> Result<Chain<'c, S, ReplyParams, ReplyError>>
     where
         Method: Serialize + Debug,
         ReplyParams: Deserialize<'c> + Debug,
         ReplyError: Deserialize<'c> + Debug,
     {
-        Chain::new(self, call)
+        Chain::new(
+            self,
+            call,
+            #[cfg(feature = "std")]
+            fds,
+        )
     }
 }
 

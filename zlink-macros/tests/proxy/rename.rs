@@ -27,7 +27,7 @@ async fn rename_test() {
 
     // Test get_data with renamed method
     let responses = json!({"parameters": {"data": "test data"}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.get_data().await.unwrap().unwrap();
@@ -41,14 +41,14 @@ async fn rename_test() {
 
     // Test update_value
     let responses = json!({}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     conn.update_value(42).await.unwrap().unwrap();
 
     // Test snake_case_method (should be converted to PascalCase)
     let responses = json!({}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     conn.snake_case_method().await.unwrap().unwrap();

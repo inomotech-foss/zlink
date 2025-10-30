@@ -2,7 +2,7 @@ pub(crate) mod listener;
 mod select_all;
 pub mod service;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use futures_util::{FutureExt, StreamExt};
 use select_all::SelectAll;
 use service::MethodReply;
@@ -120,7 +120,7 @@ where
                             if let Err(e) = reply_streams[idx]
                                 .conn
                                 .write_mut()
-                                .send_reply(&reply)
+                                .send_reply(&reply, vec![])
                                 .await
                             {
                                 warn!("Error writing to client {}: {:?}", id, e);
@@ -163,7 +163,9 @@ where
             }
         }
 
-        Ok(select_all.await)
+        let (idx, result) = select_all.await;
+        let result = result.map(|(call, _fds)| call);
+        Ok((idx, result))
     }
 
     async fn handle_call(
@@ -175,9 +177,9 @@ where
         match self.service.handle(call).await {
             MethodReply::Single(params) => {
                 let reply = Reply::new(params).set_continues(Some(false));
-                writer.send_reply(&reply).await?
+                writer.send_reply(&reply, vec![]).await?
             }
-            MethodReply::Error(err) => writer.send_error(&err).await?,
+            MethodReply::Error(err) => writer.send_error(&err, vec![]).await?,
             MethodReply::Multi(s) => {
                 trace!("Client {} now turning into a reply stream", writer.id());
                 stream = Some(s)

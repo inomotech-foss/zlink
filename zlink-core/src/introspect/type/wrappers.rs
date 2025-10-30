@@ -34,11 +34,11 @@ impl<T: Type + ?Sized> Type for std::sync::Arc<T> {
 // Cell types - transparent wrappers
 // ============================================================================
 
-impl<T: Type + ?Sized> Type for std::cell::Cell<T> {
+impl<T: Type + ?Sized> Type for core::cell::Cell<T> {
     const TYPE: &'static idl::Type<'static> = T::TYPE;
 }
 
-impl<T: Type + ?Sized> Type for std::cell::RefCell<T> {
+impl<T: Type + ?Sized> Type for core::cell::RefCell<T> {
     const TYPE: &'static idl::Type<'static> = T::TYPE;
 }
 

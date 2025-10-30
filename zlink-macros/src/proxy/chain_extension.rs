@@ -166,6 +166,11 @@ fn generate_no_params_method(
         >;
     };
 
+    #[cfg(feature = "std")]
+    let append_call = quote! { self.append(&call, vec![]) };
+    #[cfg(not(feature = "std"))]
+    let append_call = quote! { self.append(&call) };
+
     let impl_method = quote! {
         fn #method_name(
             self,
@@ -181,7 +186,7 @@ fn generate_no_params_method(
                 }
                 MethodWrapper::Method
             });
-            self.append(&call)
+            #append_call
         }
     };
 
@@ -239,6 +244,11 @@ fn generate_with_params_method(
     // Build struct where clause adding Serialize and Debug bounds for generic parameters
     let struct_where = build_struct_where_clause(method_generic_params, method_where_clause);
 
+    #[cfg(feature = "std")]
+    let append_call = quote! { self.append(&call, vec![]) };
+    #[cfg(not(feature = "std"))]
+    let append_call = quote! { self.append(&call) };
+
     let impl_method = quote! {
         fn #method_name #generics(
             self,
@@ -269,7 +279,7 @@ fn generate_with_params_method(
                     #(#arg_names,)*
                 })
             });
-            self.append(&call)
+            #append_call
         }
     };
 

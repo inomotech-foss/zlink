@@ -57,7 +57,8 @@ mod tests {
             .to_string(),
         ];
 
-        let socket = MockSocket::new(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let socket =
+            MockSocket::with_responses(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         let mut conn = Connection::new(socket);
 
         // Test successful get_person call.
@@ -111,7 +112,8 @@ mod tests {
             json!({ "parameters": { "result": null } }).to_string(),
         ];
 
-        let socket = MockSocket::new(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let socket =
+            MockSocket::with_responses(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         let mut conn = Connection::new(socket);
 
         // Test add method.
@@ -193,7 +195,8 @@ mod tests {
             json!({ "parameters": { "docs": [] } }).to_string(),
         ];
 
-        let socket = MockSocket::new(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let socket =
+            MockSocket::with_responses(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         let mut conn = Connection::new(socket);
 
         // Test store method with a document that has tags.
@@ -258,7 +261,7 @@ mod tests {
         // Test connection-level errors separately since they each need their own connection.
         // Test connection-level error (invalid JSON response).
         let invalid_json = "this is not valid JSON";
-        let socket = MockSocket::new(&[invalid_json]);
+        let socket = MockSocket::with_responses(&[invalid_json]);
         let mut conn: Connection<MockSocket> = Connection::new(socket);
 
         // This should result in a connection error, not a service error.
@@ -267,7 +270,7 @@ mod tests {
 
         // Test empty response.
         let empty_response = "";
-        let socket = MockSocket::new(&[empty_response]);
+        let socket = MockSocket::with_responses(&[empty_response]);
         let mut conn: Connection<MockSocket> = Connection::new(socket);
 
         let result = conn.get_person("test").await;
@@ -279,7 +282,7 @@ mod tests {
         })
         .to_string();
 
-        let socket = MockSocket::new(&[&weird_response]);
+        let socket = MockSocket::with_responses(&[&weird_response]);
         let mut conn: Connection<MockSocket> = Connection::new(socket);
 
         let result = conn.get_person("test").await;
@@ -331,7 +334,8 @@ mod tests {
             .to_string(),
         ];
 
-        let socket = MockSocket::new(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let socket =
+            MockSocket::with_responses(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         let mut conn = Connection::new(socket);
 
         // Test with Unicode strings.

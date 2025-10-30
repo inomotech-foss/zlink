@@ -46,7 +46,7 @@ async fn streaming_test() {
 
     // Test get_single
     let responses = json!({"parameters": {"result": "single result"}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.get_single().await.unwrap().unwrap();
@@ -58,7 +58,8 @@ async fn streaming_test() {
         json!({"continues": true, "parameters": {"result": "stream item 2"}}).to_string(),
         json!({"continues": false, "parameters": {"result": "stream item 3"}}).to_string(),
     ];
-    let socket = MockSocket::new(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+    let socket =
+        MockSocket::with_responses(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
     let mut conn = Connection::new(socket);
 
     let stream = conn.get_stream().await.unwrap();
@@ -78,7 +79,8 @@ async fn streaming_test() {
         json!({"continues": true, "parameters": {"id": 2, "name": "Item 2"}}).to_string(),
         json!({"continues": false, "parameters": {"id": 3, "name": "Item 3"}}).to_string(),
     ];
-    let socket = MockSocket::new(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+    let socket =
+        MockSocket::with_responses(&responses.iter().map(|s| s.as_str()).collect::<Vec<_>>());
     let mut conn = Connection::new(socket);
 
     let stream = conn.custom_stream(3).await.unwrap();

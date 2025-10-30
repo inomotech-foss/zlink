@@ -36,7 +36,7 @@ async fn optional_params_test() {
 
     // Test with_optionals
     let responses = json!({"parameters": {"message": "success with optionals"}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn
@@ -48,7 +48,7 @@ async fn optional_params_test() {
 
     // Test mixed_optionals
     let responses = json!({}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     conn.mixed_optionals("first", None, 100, Some(true), "third", None)
