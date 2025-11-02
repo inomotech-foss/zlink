@@ -36,10 +36,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let name = &args[i];
         i += 1;
 
-        match reply? {
-            Ok(result) => {
+        let (result, _fds) = reply?;
+        match result {
+            Ok(reply) => {
                 println!("Results for '{name}':");
-                for address in result.into_parameters().unwrap().addresses {
+                for address in reply.into_parameters().unwrap().addresses {
                     println!("\t{address}");
                 }
             }

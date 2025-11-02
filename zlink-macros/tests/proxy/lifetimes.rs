@@ -40,7 +40,7 @@ async fn lifetimes_test() {
         }
     })
     .to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.process("test input").await.unwrap().unwrap();
@@ -54,7 +54,7 @@ async fn lifetimes_test() {
         }
     })
     .to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.with_lifetime("test", 3).await.unwrap().unwrap();

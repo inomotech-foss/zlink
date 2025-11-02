@@ -2,6 +2,23 @@
 
 use core::future::Future;
 
+#[cfg(feature = "std")]
+use std::os::fd::{AsFd, OwnedFd};
+
+/// Result type for [`ReadHalf::read`] operations.
+///
+/// With `std` feature: returns `(usize, Vec<OwnedFd>)` - bytes read and file descriptors.
+/// Without `std` feature: returns `usize` - just bytes read.
+#[cfg(feature = "std")]
+pub type ReadResult = (usize, alloc::vec::Vec<OwnedFd>);
+
+/// Result type for [`ReadHalf::read`] operations.
+///
+/// With `std` feature: returns `(usize, Vec<OwnedFd>)` - bytes read and file descriptors.
+/// Without `std` feature: returns `usize` - just bytes read.
+#[cfg(not(feature = "std"))]
+pub type ReadResult = usize;
+
 /// The socket trait.
 ///
 /// This is the trait that needs to be implemented for a type to be used as a socket/transport.
@@ -11,6 +28,11 @@ pub trait Socket: core::fmt::Debug {
     /// The write half of the socket.
     type WriteHalf: WriteHalf;
 
+    /// Whether this socket can transfer file descriptors.
+    ///
+    /// This is `true` for Unix domain sockets and `false` for other socket types.
+    const CAN_TRANSFER_FDS: bool = false;
+
     /// Split the socket into read and write halves.
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf);
 }
@@ -19,7 +41,7 @@ pub trait Socket: core::fmt::Debug {
 pub trait ReadHalf: core::fmt::Debug {
     /// Read from a socket.
     ///
-    /// On completion, the number of bytes read is returned.
+    /// On completion, the number of bytes read and any file descriptors received are returned.
     ///
     /// Notes for implementers:
     ///
@@ -29,15 +51,21 @@ pub trait ReadHalf: core::fmt::Debug {
     ///   is not explicitly requied is that it would force boxing (and therefore allocation) on the
     ///   implemention that use `async fn`, which is undesirable for embedded use cases. See [this
     ///   issue](https://github.com/rust-lang/rust/issues/82187) for details.
-    fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = crate::Result<usize>>;
+    fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = crate::Result<ReadResult>>;
 }
 
 /// The write half of a socket.
 pub trait WriteHalf: core::fmt::Debug {
     /// Write to the socket.
     ///
+    /// The `fds` parameter contains file descriptors to send along with the data (std only).
+    ///
     /// The returned future has the same requirements as that of [`ReadHalf::read`].
-    fn write(&mut self, buf: &[u8]) -> impl Future<Output = crate::Result<()>>;
+    fn write(
+        &mut self,
+        buf: &[u8],
+        #[cfg(feature = "std")] fds: &[impl AsFd],
+    ) -> impl Future<Output = crate::Result<()>>;
 }
 
 /// Documentation-only socket implementations for doc tests.
@@ -64,7 +92,7 @@ pub mod impl_for_doc {
     pub struct ReadHalf;
 
     impl super::ReadHalf for ReadHalf {
-        async fn read(&mut self, _buf: &mut [u8]) -> crate::Result<usize> {
+        async fn read(&mut self, _buf: &mut [u8]) -> crate::Result<super::ReadResult> {
             unreachable!("This is only for doc tests")
         }
     }
@@ -74,7 +102,11 @@ pub mod impl_for_doc {
     pub struct WriteHalf;
 
     impl super::WriteHalf for WriteHalf {
-        async fn write(&mut self, _buf: &[u8]) -> crate::Result<()> {
+        async fn write(
+            &mut self,
+            _buf: &[u8],
+            #[cfg(feature = "std")] _fds: &[impl super::AsFd],
+        ) -> crate::Result<()> {
             unreachable!("This is only for doc tests")
         }
     }

@@ -2,10 +2,8 @@ use crate::{
     connection::socket::{self, Socket},
     Result,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{unix, UnixStream},
-};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use tokio::net::{unix, UnixStream};
 
 /// The connection type that uses Unix Domain Sockets for transport.
 pub type Connection = crate::Connection<Stream>;
@@ -30,6 +28,8 @@ impl Socket for Stream {
     type ReadHalf = ReadHalf;
     type WriteHalf = WriteHalf;
 
+    const CAN_TRANSFER_FDS: bool = true;
+
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
         let (read, write) = self.0.into_split();
 
@@ -48,8 +48,24 @@ impl From<UnixStream> for Stream {
 pub struct ReadHalf(unix::OwnedReadHalf);
 
 impl socket::ReadHalf for ReadHalf {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.0.read(buf).await.map_err(Into::into)
+    async fn read(&mut self, buf: &mut [u8]) -> Result<(usize, Vec<OwnedFd>)> {
+        use std::{future::poll_fn, task::Poll};
+
+        poll_fn(|cx| loop {
+            let stream: &UnixStream = self.0.as_ref();
+            match stream.try_io(tokio::io::Interest::READABLE, || {
+                crate::unix_utils::recvmsg(stream, buf)
+            }) {
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    match stream.poll_read_ready(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(res) => res?,
+                    }
+                }
+                v => return Poll::Ready(v.map_err(Into::into)),
+            }
+        })
+        .await
     }
 }
 
@@ -58,11 +74,34 @@ impl socket::ReadHalf for ReadHalf {
 pub struct WriteHalf(unix::OwnedWriteHalf);
 
 impl socket::WriteHalf for WriteHalf {
-    async fn write(&mut self, buf: &[u8]) -> Result<()> {
-        let mut pos = 0;
+    async fn write(&mut self, buf: &[u8], fds: &[impl AsFd]) -> Result<()> {
+        use std::{future::poll_fn, task::Poll};
 
+        // Convert to BorrowedFd for rustix.
+        let borrowed_fds: Vec<BorrowedFd<'_>> = fds.iter().map(|f| f.as_fd()).collect();
+
+        let mut pos = 0;
         while pos < buf.len() {
-            let n = self.0.write(&buf[pos..]).await?;
+            // Use FDs on first write, empty slice on subsequent writes.
+            let fds_to_send = if pos == 0 { &borrowed_fds[..] } else { &[] };
+
+            let n: usize = poll_fn(|cx| loop {
+                let stream: &UnixStream = self.0.as_ref();
+                match stream.try_io(tokio::io::Interest::WRITABLE, || {
+                    crate::unix_utils::sendmsg(stream, &buf[pos..], fds_to_send)
+                }) {
+                    Ok(bytes_sent) => return Poll::Ready(Ok::<_, crate::Error>(bytes_sent)),
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        match stream.poll_write_ready(cx) {
+                            Poll::Pending => return Poll::Pending,
+                            Poll::Ready(res) => res?,
+                        }
+                    }
+                    Err(e) => return Poll::Ready(Err(e.into())),
+                }
+            })
+            .await?;
+
             pos += n;
         }
 

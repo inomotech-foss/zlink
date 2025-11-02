@@ -71,7 +71,7 @@ async fn complex_lifetimes_test() {
         }]
     })
     .to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let items = vec!["item1".to_string()];
@@ -86,7 +86,7 @@ async fn complex_lifetimes_test() {
         }
     })
     .to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let mut data = HashMap::new();
@@ -109,7 +109,7 @@ async fn complex_lifetimes_test() {
         }
     })
     .to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let pairs = vec![("key1".to_string(), 100), ("key2".to_string(), 200)];
@@ -125,7 +125,7 @@ async fn complex_lifetimes_test() {
         }
     })
     .to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.generic_result("test input").await.unwrap().unwrap();

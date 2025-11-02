@@ -29,7 +29,7 @@ async fn generic_test() {
 
     // Test process with String type parameter
     let responses = json!({"parameters": {"result": "success"}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn
@@ -41,7 +41,7 @@ async fn generic_test() {
 
     // Test process2 with i32 type parameter
     let responses = json!({"parameters": {"result": "process2 result"}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.process2(123).await.unwrap().unwrap();
@@ -71,7 +71,7 @@ async fn where_clause_test() {
 
     // Test get with i32 type parameter
     let responses = json!({"parameters": {"value": "42"}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.get(42).await.unwrap().unwrap();
@@ -79,7 +79,7 @@ async fn where_clause_test() {
 
     // Test get2 with bool type parameter
     let responses = json!({"parameters": {"value": "true"}}).to_string();
-    let socket = MockSocket::new(&[&responses]);
+    let socket = MockSocket::with_responses(&[&responses]);
     let mut conn = Connection::new(socket);
 
     let result = conn.get2(true).await.unwrap().unwrap();

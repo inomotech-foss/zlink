@@ -31,7 +31,11 @@ fn client_sending(c: &mut Criterion) {
                 tokio::spawn(async move {
                     let mut server_conn = Connection::new(server_socket);
                     for _ in 0..NUM_CALLS {
-                        let _: Call<TestMethod> =
+                        #[cfg(feature = "std")]
+                        let (_call, _fds): (Call<TestMethod>, _) =
+                            server_conn.read_mut().receive_call().await.unwrap();
+                        #[cfg(not(feature = "std"))]
+                        let _call: Call<TestMethod> =
                             server_conn.read_mut().receive_call().await.unwrap();
 
                         // Simulate context switch overhead (100 microseconds).
@@ -41,6 +45,13 @@ fn client_sending(c: &mut Criterion) {
                             id: 1,
                             timestamp: 12345,
                         }));
+                        #[cfg(feature = "std")]
+                        server_conn
+                            .write_mut()
+                            .send_reply(&reply, vec![])
+                            .await
+                            .unwrap();
+                        #[cfg(not(feature = "std"))]
                         server_conn.write_mut().send_reply(&reply).await.unwrap();
                     }
                 });
@@ -51,12 +62,23 @@ fn client_sending(c: &mut Criterion) {
                 // Benchmark: Make sequential calls - each waits for reply before sending next.
                 for i in 0..NUM_CALLS {
                     let call = Call::new(TestMethod::Ping { id: i as u32 });
+                    #[cfg(feature = "std")]
+                    conn.send_call(&call, vec![]).await.unwrap();
+                    #[cfg(not(feature = "std"))]
                     conn.send_call(&call).await.unwrap();
 
                     #[derive(Debug, Deserialize)]
                     struct DummyError;
-                    let _: zlink_core::reply::Result<PingReply, DummyError> =
-                        conn.receive_reply().await.unwrap();
+                    #[cfg(feature = "std")]
+                    let (_reply, _fds): (
+                        zlink_core::reply::Result<PingReply, DummyError>,
+                        _,
+                    ) = conn.receive_reply().await.unwrap();
+                    #[cfg(not(feature = "std"))]
+                    let _reply: zlink_core::reply::Result<
+                        PingReply,
+                        DummyError,
+                    > = conn.receive_reply().await.unwrap();
                 }
             },
             criterion::BatchSize::SmallInput,
@@ -75,7 +97,11 @@ fn client_sending(c: &mut Criterion) {
 
                     // Server receives all calls at once.
                     for _ in 0..NUM_CALLS {
-                        let _: Call<TestMethod> =
+                        #[cfg(feature = "std")]
+                        let (_call, _fds): (Call<TestMethod>, _) =
+                            server_conn.read_mut().receive_call().await.unwrap();
+                        #[cfg(not(feature = "std"))]
+                        let _call: Call<TestMethod> =
                             server_conn.read_mut().receive_call().await.unwrap();
                     }
 
@@ -88,6 +114,13 @@ fn client_sending(c: &mut Criterion) {
                             id: 1,
                             timestamp: 12345,
                         }));
+                        #[cfg(feature = "std")]
+                        server_conn
+                            .write_mut()
+                            .send_reply(&reply, vec![])
+                            .await
+                            .unwrap();
+                        #[cfg(not(feature = "std"))]
                         server_conn.write_mut().send_reply(&reply).await.unwrap();
                     }
                 });
@@ -99,11 +132,21 @@ fn client_sending(c: &mut Criterion) {
                 let call = Call::new(TestMethod::Ping { id: 0 });
                 #[derive(Debug, Deserialize)]
                 struct DummyError;
-                let mut chain = conn.chain_call::<_, PingReply, DummyError>(&call).unwrap();
+                #[cfg(feature = "std")]
+                let chain_result = conn.chain_call::<_, PingReply, DummyError>(&call, vec![]);
+                #[cfg(not(feature = "std"))]
+                let chain_result = conn.chain_call::<_, PingReply, DummyError>(&call);
+
+                let mut chain = chain_result.unwrap();
 
                 for i in 1..NUM_CALLS {
                     let call = Call::new(TestMethod::Ping { id: i as u32 });
-                    chain = chain.append(&call).unwrap();
+                    #[cfg(feature = "std")]
+                    let new_chain = chain.append(&call, vec![]);
+                    #[cfg(not(feature = "std"))]
+                    let new_chain = chain.append(&call);
+
+                    chain = new_chain.unwrap();
                 }
 
                 // Send all at once and collect replies.
@@ -111,7 +154,15 @@ fn client_sending(c: &mut Criterion) {
                 pin_mut!(replies);
 
                 let mut count = 0;
-                while let Some(reply) = replies.next().await {
+                while let Some(result) = replies.next().await {
+                    #[cfg(feature = "std")]
+                    let reply = {
+                        let (r, _fds) = result.unwrap();
+                        r
+                    };
+                    #[cfg(not(feature = "std"))]
+                    let reply = result.unwrap();
+
                     let _ = reply.unwrap();
                     count += 1;
                 }
@@ -144,13 +195,24 @@ fn server_receiving(c: &mut Criterion) {
                         let call = Call::new(TestMethod::Compute {
                             values: vec![i as u32; 10],
                         });
+                        #[cfg(feature = "std")]
+                        client_conn.send_call(&call, vec![]).await.unwrap();
+                        #[cfg(not(feature = "std"))]
                         client_conn.send_call(&call).await.unwrap();
 
                         // Wait for reply before sending next (sequential pattern).
                         #[derive(Debug, Deserialize)]
                         struct DummyError;
-                        let _: zlink_core::reply::Result<ComputeReply, DummyError> =
-                            client_conn.receive_reply().await.unwrap();
+                        #[cfg(feature = "std")]
+                        let (_reply, _fds): (
+                            zlink_core::reply::Result<ComputeReply, DummyError>,
+                            _,
+                        ) = client_conn.receive_reply().await.unwrap();
+                        #[cfg(not(feature = "std"))]
+                        let _reply: zlink_core::reply::Result<
+                            ComputeReply,
+                            DummyError,
+                        > = client_conn.receive_reply().await.unwrap();
                     }
                 });
 
@@ -160,12 +222,23 @@ fn server_receiving(c: &mut Criterion) {
                 // Benchmark: Server receives calls one at a time.
                 for _ in 0..NUM_CALLS {
                     // Measure the time to receive and deserialize each call.
+                    #[cfg(feature = "std")]
+                    let (call, _fds): (Call<TestMethod>, _) =
+                        server_conn.read_mut().receive_call().await.unwrap();
+                    #[cfg(not(feature = "std"))]
                     let call: Call<TestMethod> =
                         server_conn.read_mut().receive_call().await.unwrap();
                     black_box(call);
 
                     // Send reply so client can continue.
                     let reply = Reply::new(Some(ComputeReply { result: 42 }));
+                    #[cfg(feature = "std")]
+                    server_conn
+                        .write_mut()
+                        .send_reply(&reply, vec![])
+                        .await
+                        .unwrap();
+                    #[cfg(not(feature = "std"))]
                     server_conn.write_mut().send_reply(&reply).await.unwrap();
                 }
             },
@@ -188,6 +261,9 @@ fn server_receiving(c: &mut Criterion) {
                         let call = Call::new(TestMethod::Compute {
                             values: vec![i as u32; 10],
                         });
+                        #[cfg(feature = "std")]
+                        client_conn.write_mut().enqueue_call(&call, vec![]).unwrap();
+                        #[cfg(not(feature = "std"))]
                         client_conn.write_mut().enqueue_call(&call).unwrap();
                     }
                     // Flush all at once.
@@ -197,8 +273,16 @@ fn server_receiving(c: &mut Criterion) {
                     for _ in 0..NUM_CALLS {
                         #[derive(Debug, Deserialize)]
                         struct DummyError;
-                        let _: zlink_core::reply::Result<ComputeReply, DummyError> =
-                            client_conn.receive_reply().await.unwrap();
+                        #[cfg(feature = "std")]
+                        let (_reply, _fds): (
+                            zlink_core::reply::Result<ComputeReply, DummyError>,
+                            _,
+                        ) = client_conn.receive_reply().await.unwrap();
+                        #[cfg(not(feature = "std"))]
+                        let _reply: zlink_core::reply::Result<
+                            ComputeReply,
+                            DummyError,
+                        > = client_conn.receive_reply().await.unwrap();
                     }
                 });
 
@@ -211,6 +295,10 @@ fn server_receiving(c: &mut Criterion) {
 
                 // Receive all calls - they're already in the buffer.
                 for _ in 0..NUM_CALLS {
+                    #[cfg(feature = "std")]
+                    let (call, _fds): (Call<TestMethod>, _) =
+                        server_conn.read_mut().receive_call().await.unwrap();
+                    #[cfg(not(feature = "std"))]
                     let call: Call<TestMethod> =
                         server_conn.read_mut().receive_call().await.unwrap();
                     calls.push(call);
@@ -220,6 +308,13 @@ fn server_receiving(c: &mut Criterion) {
                 // Send replies.
                 for _ in 0..NUM_CALLS {
                     let reply = Reply::new(Some(ComputeReply { result: 42 }));
+                    #[cfg(feature = "std")]
+                    server_conn
+                        .write_mut()
+                        .send_reply(&reply, vec![])
+                        .await
+                        .unwrap();
+                    #[cfg(not(feature = "std"))]
                     server_conn.write_mut().send_reply(&reply).await.unwrap();
                 }
             },
@@ -303,12 +398,18 @@ struct BiPipeReadHalf {
 }
 
 impl ReadHalf for BiPipeReadHalf {
-    async fn read(&mut self, buf: &mut [u8]) -> zlink_core::Result<usize> {
+    async fn read(
+        &mut self,
+        buf: &mut [u8],
+    ) -> zlink_core::Result<zlink_core::connection::socket::ReadResult> {
         // If we have buffered data, return it.
         if self.pos < self.buffer.len() {
             let to_read = (self.buffer.len() - self.pos).min(buf.len());
             buf[..to_read].copy_from_slice(&self.buffer[self.pos..self.pos + to_read]);
             self.pos += to_read;
+            #[cfg(feature = "std")]
+            return Ok((to_read, vec![]));
+            #[cfg(not(feature = "std"))]
             return Ok(to_read);
         }
 
@@ -320,9 +421,17 @@ impl ReadHalf for BiPipeReadHalf {
                 let to_read = self.buffer.len().min(buf.len());
                 buf[..to_read].copy_from_slice(&self.buffer[..to_read]);
                 self.pos = to_read;
-                Ok(to_read)
+                #[cfg(feature = "std")]
+                return Ok((to_read, vec![]));
+                #[cfg(not(feature = "std"))]
+                return Ok(to_read);
             }
-            None => Ok(0), // Connection closed.
+            None => {
+                #[cfg(feature = "std")]
+                return Ok((0, vec![])); // Connection closed.
+                #[cfg(not(feature = "std"))]
+                return Ok(0); // Connection closed.
+            }
         }
     }
 }
@@ -333,7 +442,11 @@ struct BiPipeWriteHalf {
 }
 
 impl WriteHalf for BiPipeWriteHalf {
-    async fn write(&mut self, buf: &[u8]) -> zlink_core::Result<()> {
+    async fn write(
+        &mut self,
+        buf: &[u8],
+        #[cfg(feature = "std")] _fds: &[impl std::os::fd::AsFd],
+    ) -> zlink_core::Result<()> {
         self.sender
             .send(buf.to_vec())
             .map_err(|_| zlink_core::Error::UnexpectedEof)?;

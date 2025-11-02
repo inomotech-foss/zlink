@@ -13,6 +13,20 @@ use crate::{
     reply, Result,
 };
 
+#[cfg(feature = "std")]
+use std::os::fd::OwnedFd;
+
+/// Type alias for chain reply results.
+///
+/// In std mode, includes file descriptors received with the reply.
+/// In no_std mode, just the reply result.
+#[cfg(feature = "std")]
+pub(crate) type ChainResult<Params, ReplyError> =
+    (reply::Result<Params, ReplyError>, alloc::vec::Vec<OwnedFd>);
+
+#[cfg(not(feature = "std"))]
+pub(crate) type ChainResult<Params, ReplyError> = reply::Result<Params, ReplyError>;
+
 pin_project! {
     /// A stream of replies from a chain of method calls.
     #[derive(Debug)]
@@ -32,7 +46,7 @@ impl<'c, Read, F, Fut, Params, ReplyError> ReplyStream<'c, Read, F, Fut, Params,
 where
     Read: ReadHalf,
     F: FnMut(&'c mut ReadConnection<Read>) -> Fut,
-    Fut: Future<Output = Result<reply::Result<Params, ReplyError>>>,
+    Fut: Future<Output = Result<ChainResult<Params, ReplyError>>>,
     Params: Deserialize<'c> + Debug,
     ReplyError: Deserialize<'c> + Debug,
 {
@@ -58,11 +72,11 @@ impl<'c, Read, F, Fut, Params, ReplyError> Stream
 where
     Read: ReadHalf,
     F: FnMut(&'c mut ReadConnection<Read>) -> Fut,
-    Fut: Future<Output = Result<reply::Result<Params, ReplyError>>>,
+    Fut: Future<Output = Result<ChainResult<Params, ReplyError>>>,
     Params: Deserialize<'c> + Debug,
     ReplyError: Deserialize<'c> + Debug,
 {
-    type Item = Result<reply::Result<Params, ReplyError>>;
+    type Item = Result<ChainResult<Params, ReplyError>>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
@@ -84,21 +98,44 @@ where
 
         // Only increment current_index if this is the last reply for this call.
         // (i.e., continues is not Some(true))
-        match &item {
-            Ok(Ok(reply)) if reply.continues() != Some(true) => {
-                *this.current_index += 1;
+        #[cfg(feature = "std")]
+        {
+            match &item {
+                Ok((Ok(reply), _fds)) if reply.continues() != Some(true) => {
+                    *this.current_index += 1;
+                }
+                Ok((Ok(_), _fds)) => {
+                    // Streaming reply, don't increment index yet.
+                }
+                Ok((Err(_), _fds)) => {
+                    // For method errors, always increment since there won't be more replies.
+                    *this.current_index += 1;
+                }
+                Err(_) => {
+                    // If there was a general error, mark the stream as done as it's likely not
+                    // recoverable.
+                    *this.done = true;
+                }
             }
-            Ok(Ok(_)) => {
-                // Streaming reply, don't increment index yet.
-            }
-            Ok(Err(_)) => {
-                // For method errors, always increment since there won't be more replies.
-                *this.current_index += 1;
-            }
-            Err(_) => {
-                // If there was a general error, mark the stream as done as it's likely not
-                // recoverable.
-                *this.done = true;
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            match &item {
+                Ok(Ok(reply)) if reply.continues() != Some(true) => {
+                    *this.current_index += 1;
+                }
+                Ok(Ok(_)) => {
+                    // Streaming reply, don't increment index yet.
+                }
+                Ok(Err(_)) => {
+                    // For method errors, always increment since there won't be more replies.
+                    *this.current_index += 1;
+                }
+                Err(_) => {
+                    // If there was a general error, mark the stream as done as it's likely not
+                    // recoverable.
+                    *this.done = true;
+                }
             }
         }
         if *this.current_index >= *this.call_count {

@@ -8,9 +8,9 @@ pub use info::Info;
 mod api;
 pub use api::{Error, Method, Reply, Result};
 
-#[cfg(feature = "idl-parse")]
+#[cfg(all(feature = "idl-parse", feature = "std"))]
 mod proxy;
-#[cfg(feature = "idl-parse")]
+#[cfg(all(feature = "idl-parse", feature = "std"))]
 pub use proxy::{Chain, Proxy};
 
 #[cfg(feature = "idl")]

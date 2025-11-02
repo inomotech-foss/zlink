@@ -331,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pin_mut!(replies);
     let mut results = Vec::new();
     while let Some(reply) = replies.next().await {
-        let reply = reply?;
+        let (reply, _fds) = reply?;
         if let Ok(response) = reply {
             match response.into_parameters() {
                 Some(ProcessReply::Result(result)) => {

@@ -26,7 +26,9 @@ pub mod connection;
 pub use connection::Connection;
 mod error;
 pub use error::{Error, Result};
+#[cfg(feature = "std")]
 mod server;
+#[cfg(feature = "std")]
 pub use server::{
     listener::Listener,
     service::{self, Service},
@@ -46,6 +48,10 @@ pub mod varlink_service;
 pub use zlink_macros::proxy;
 
 pub use zlink_macros::ReplyError;
+
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub mod unix_utils;
 
 #[doc(hidden)]
 pub mod test_utils;

@@ -113,21 +113,24 @@ async fn run_client(conditions: &[DriveCondition]) -> Result<(), Box<dyn std::er
             pin_mut!(replies);
 
             // First reply: initial drive condition
-            let reply = replies.next().await.unwrap()?.unwrap();
+            let (reply, _fds) = replies.next().await.unwrap()?;
+            let reply = reply.unwrap();
             let Some(FtlReply::DriveCondition(drive_condition)) = reply.into_parameters() else {
                 panic!("Unexpected reply");
             };
             assert_eq!(drive_condition, conditions[0]);
 
             // Second reply: confirmation of set_drive_condition
-            let reply = replies.next().await.unwrap()?.unwrap();
+            let (reply, _fds) = replies.next().await.unwrap()?;
+            let reply = reply.unwrap();
             let Some(FtlReply::DriveCondition(drive_condition)) = reply.into_parameters() else {
                 panic!("Unexpected reply");
             };
             assert_eq!(drive_condition, conditions[1]);
 
             // Third reply: get_drive_condition after the set
-            let reply = replies.next().await.unwrap()?.unwrap();
+            let (reply, _fds) = replies.next().await.unwrap()?;
+            let reply = reply.unwrap();
             let Some(FtlReply::DriveCondition(drive_condition)) = reply.into_parameters() else {
                 panic!("Unexpected reply");
             };
@@ -157,12 +160,14 @@ async fn run_client(conditions: &[DriveCondition]) -> Result<(), Box<dyn std::er
             .send()
             .await?;
         pin_mut!(replies);
-        let e = replies.try_next().await?.unwrap().unwrap_err();
+        let (result, _fds) = replies.try_next().await?.unwrap();
+        let e = result.unwrap_err();
         // The first call should fail because we didn't have enough energy.
         assert_eq!(e, FtlError::NotEnoughEnergy);
 
         // The second call should succeed.
-        let reply = replies.try_next().await?.unwrap()?;
+        let (reply, _fds) = replies.try_next().await?.unwrap();
+        let reply = reply?;
         assert_eq!(
             reply.parameters(),
             Some(&FtlReply::Coordinates(Coordinate {

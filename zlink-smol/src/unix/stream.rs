@@ -3,7 +3,13 @@ use crate::{
     Result,
 };
 use async_io::Async;
-use std::{os::unix::net::UnixStream as StdUnixStream, sync::Arc};
+use std::{
+    os::{
+        fd::{AsFd, BorrowedFd, OwnedFd},
+        unix::net::UnixStream as StdUnixStream,
+    },
+    sync::Arc,
+};
 
 /// The connection type that uses Unix Domain Sockets for transport.
 pub type Connection = crate::Connection<Stream>;
@@ -28,6 +34,8 @@ impl Socket for Stream {
     type ReadHalf = ReadHalf;
     type WriteHalf = WriteHalf;
 
+    const CAN_TRANSFER_FDS: bool = true;
+
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
         let stream = Arc::new(self.0);
 
@@ -46,12 +54,22 @@ impl From<Async<StdUnixStream>> for Stream {
 pub struct ReadHalf(Arc<Async<StdUnixStream>>);
 
 impl socket::ReadHalf for ReadHalf {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        use futures_lite::io::AsyncReadExt;
+    async fn read(&mut self, buf: &mut [u8]) -> Result<(usize, Vec<OwnedFd>)> {
+        use std::{future::poll_fn, task::Poll};
 
-        AsyncReadExt::read(&mut &*self.0, buf)
-            .await
-            .map_err(Into::into)
+        poll_fn(|cx| loop {
+            match crate::unix_utils::recvmsg(self.0.as_ref(), buf) {
+                Ok(result) => return Poll::Ready(Ok(result)),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    match self.0.poll_readable(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(res) => res?,
+                    }
+                }
+                Err(e) => return Poll::Ready(Err(e.into())),
+            }
+        })
+        .await
     }
 }
 
@@ -60,13 +78,31 @@ impl socket::ReadHalf for ReadHalf {
 pub struct WriteHalf(Arc<Async<StdUnixStream>>);
 
 impl socket::WriteHalf for WriteHalf {
-    async fn write(&mut self, buf: &[u8]) -> Result<()> {
-        use futures_lite::io::AsyncWriteExt;
+    async fn write(&mut self, buf: &[u8], fds: &[impl AsFd]) -> Result<()> {
+        use std::{future::poll_fn, task::Poll};
+
+        // Convert to BorrowedFd for rustix.
+        let borrowed_fds: Vec<BorrowedFd<'_>> = fds.iter().map(|f| f.as_fd()).collect();
 
         let mut pos = 0;
-
         while pos < buf.len() {
-            let n = AsyncWriteExt::write(&mut &*self.0, &buf[pos..]).await?;
+            // Use FDs on first write, empty slice on subsequent writes.
+            let fds_to_send = if pos == 0 { &borrowed_fds[..] } else { &[] };
+
+            let n: usize = poll_fn(|cx| loop {
+                match crate::unix_utils::sendmsg(self.0.as_ref(), &buf[pos..], fds_to_send) {
+                    Ok(bytes_sent) => return Poll::Ready(Ok::<_, crate::Error>(bytes_sent)),
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        match self.0.poll_writable(cx) {
+                            Poll::Pending => return Poll::Pending,
+                            Poll::Ready(res) => res?,
+                        }
+                    }
+                    Err(e) => return Poll::Ready(Err(e.into())),
+                }
+            })
+            .await?;
+
             pos += n;
         }
 
