@@ -1,6 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parser, parse2, Error, ItemTrait, Lit, TraitItem};
+use std::collections::HashMap;
+use syn::{parse::Parser, parse2, Error, FnArg, ItemTrait, Lit, Pat, TraitItem};
 
 mod chain_extension;
 mod chain_method;
@@ -12,7 +13,7 @@ use chain_extension::generate_chain_extension_method;
 use chain_method::generate_chain_method;
 use method_impl::generate_method_impl;
 use types::MethodAttrs;
-use utils::build_combined_where_clause;
+use utils::{build_combined_where_clause, extract_param_attrs, ParamAttrs};
 
 pub(crate) fn proxy(attr: TokenStream, input: TokenStream) -> TokenStream {
     match proxy_impl(attr, input) {
@@ -43,6 +44,19 @@ fn proxy_impl(attr: TokenStream, input: TokenStream) -> Result<TokenStream, Erro
             // Extract attributes once to avoid multiple mutable borrows
             let method_attrs = MethodAttrs::extract(&mut method.attrs)?;
 
+            // Extract parameter attributes once for all parameters
+            let mut param_attrs_map: HashMap<String, ParamAttrs> = HashMap::new();
+            for arg in method.sig.inputs.iter_mut().skip(1) {
+                // Skip &mut self
+                if let FnArg::Typed(pat_type) = arg {
+                    if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                        let param_name = pat_ident.ident.to_string();
+                        let attrs = extract_param_attrs(&mut pat_type.attrs)?;
+                        param_attrs_map.insert(param_name, attrs);
+                    }
+                }
+            }
+
             // Generate chain extension method
             let (extension_method, extension_impl) = generate_chain_extension_method(
                 method,
@@ -50,6 +64,7 @@ fn proxy_impl(attr: TokenStream, input: TokenStream) -> Result<TokenStream, Erro
                 &trait_def.generics,
                 &method_attrs,
                 &crate_path,
+                &param_attrs_map,
             )?;
             if !extension_method.is_empty() {
                 chain_extension_methods.push(extension_method);
@@ -65,6 +80,7 @@ fn proxy_impl(attr: TokenStream, input: TokenStream) -> Result<TokenStream, Erro
                 &trait_def.generics,
                 &method_attrs,
                 &crate_path,
+                &param_attrs_map,
             )?;
             methods.push(method_impl);
 
@@ -75,6 +91,7 @@ fn proxy_impl(attr: TokenStream, input: TokenStream) -> Result<TokenStream, Erro
                 &trait_def.generics,
                 &method_attrs,
                 &crate_path,
+                &param_attrs_map,
             )?;
             if !chain_trait.is_empty() {
                 chain_method_traits.push(chain_trait);

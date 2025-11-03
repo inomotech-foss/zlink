@@ -1,3 +1,5 @@
+#![cfg(feature = "proxy")]
+
 //! Test that proxy macro works with both old and new attribute formats
 
 use zlink::proxy;

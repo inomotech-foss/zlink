@@ -4,7 +4,9 @@ use syn::{Error, FnArg, Pat};
 
 use super::{
     types::{ArgInfo, MethodAttrs},
-    utils::{convert_to_single_lifetime, snake_case_to_pascal_case, type_contains_lifetime},
+    utils::{
+        convert_to_single_lifetime, snake_case_to_pascal_case, type_contains_lifetime, ParamAttrs,
+    },
 };
 
 pub(super) fn generate_chain_extension_method(
@@ -13,6 +15,7 @@ pub(super) fn generate_chain_extension_method(
     _trait_generics: &syn::Generics,
     method_attrs: &MethodAttrs,
     crate_path: &TokenStream,
+    param_attrs_map: &std::collections::HashMap<String, ParamAttrs>,
 ) -> Result<(TokenStream, TokenStream), Error> {
     let method_name_str = method.sig.ident.to_string();
     let method_ident = method.sig.ident.clone();
@@ -34,9 +37,30 @@ pub(super) fn generate_chain_extension_method(
     let method_where_clause = method.sig.generics.where_clause.clone();
 
     // Parse method arguments (skip &mut self)
-    let arg_infos = parse_method_arguments(method, has_explicit_lifetimes)?;
-    let arg_names: Vec<_> = arg_infos.iter().map(|info| info.name).collect();
+    let arg_infos = parse_method_arguments(method, has_explicit_lifetimes, param_attrs_map)?;
     let has_any_lifetime = arg_infos.iter().any(|info| info.has_lifetime);
+
+    // Validate FD parameters
+    let fds_params: Vec<_> = arg_infos.iter().filter(|info| info.is_fds).collect();
+    if fds_params.len() > 1 {
+        return Err(Error::new_spanned(
+            &method.sig,
+            "method can have at most one parameter marked with #[zlink(fds)]",
+        ));
+    }
+
+    // Separate FD parameters from regular parameters
+    let regular_params: Vec<_> = arg_infos.iter().filter(|info| !info.is_fds).collect();
+    let arg_names: Vec<_> = regular_params.iter().map(|info| info.name).collect();
+
+    // Generate FD initialization
+    #[cfg(feature = "std")]
+    let fds_init = if let Some(fd_param) = fds_params.first() {
+        let fd_name = fd_param.name;
+        quote! { #fd_name }
+    } else {
+        quote! { ::std::vec::Vec::new() }
+    };
 
     // Generate method signature with all method generics
     let generics = build_method_generics(
@@ -48,8 +72,18 @@ pub(super) fn generate_chain_extension_method(
     // Generate where clause combining lifetime bound with method's where clause
     let combined_where_clause = build_combined_where_clause(&method_where_clause);
 
-    // Generate parameter list for the chain extension method
-    let param_fields: Vec<_> = arg_infos
+    // Generate parameter list for the chain extension method (includes ALL params, including FDs)
+    let all_param_fields: Vec<_> = arg_infos
+        .iter()
+        .map(|info| {
+            let name = info.name;
+            let ty = &info.ty_for_params;
+            quote! { #name: #ty }
+        })
+        .collect();
+
+    // Generate regular parameter fields (excluding FDs) for the params struct
+    let regular_param_fields: Vec<_> = regular_params
         .iter()
         .map(|info| {
             let name = info.name;
@@ -59,19 +93,28 @@ pub(super) fn generate_chain_extension_method(
         .collect();
 
     if arg_infos.is_empty() {
-        generate_no_params_method(&method_ident, &method_path, crate_path)
+        generate_no_params_method(
+            &method_ident,
+            &method_path,
+            #[cfg(feature = "std")]
+            fds_init,
+            crate_path,
+        )
     } else {
         generate_with_params_method(
             &method_ident,
             &method_path,
             generics,
             combined_where_clause,
-            param_fields,
+            all_param_fields,
+            regular_param_fields,
             arg_names,
             &method_generic_params,
             &method_where_clause,
             has_any_lifetime,
             has_explicit_lifetimes,
+            #[cfg(feature = "std")]
+            fds_init,
             crate_path,
         )
     }
@@ -80,6 +123,7 @@ pub(super) fn generate_chain_extension_method(
 fn parse_method_arguments<'a>(
     method: &'a mut syn::TraitItemFn,
     has_explicit_lifetimes: bool,
+    param_attrs_map: &std::collections::HashMap<String, ParamAttrs>,
 ) -> Result<Vec<ArgInfo<'a>>, Error> {
     method
         .sig
@@ -97,6 +141,12 @@ fn parse_method_arguments<'a>(
             let name = &pat_ident.ident;
             let ty = &pat_type.ty;
 
+            // Get pre-extracted parameter attributes
+            let param_name = name.to_string();
+            let param_attrs = param_attrs_map.get(&param_name);
+            let serialized_name = param_attrs.and_then(|attrs| attrs.rename.clone());
+            let is_fds = param_attrs.map(|attrs| attrs.is_fds).unwrap_or(false);
+
             // Only convert to single lifetime if there are no explicit lifetimes
             let ty_for_params = if has_explicit_lifetimes {
                 (**ty).clone()
@@ -112,7 +162,8 @@ fn parse_method_arguments<'a>(
                 ty_for_params,
                 has_lifetime,
                 is_optional: false,
-                serialized_name: None,
+                serialized_name,
+                is_fds,
             }))
         })
         .collect()
@@ -155,6 +206,7 @@ fn build_combined_where_clause(method_where_clause: &Option<syn::WhereClause>) -
 fn generate_no_params_method(
     method_name: &syn::Ident,
     method_path: &str,
+    #[cfg(feature = "std")] fds_init: TokenStream,
     crate_path: &TokenStream,
 ) -> Result<(TokenStream, TokenStream), Error> {
     let trait_method = quote! {
@@ -167,9 +219,9 @@ fn generate_no_params_method(
     };
 
     #[cfg(feature = "std")]
-    let append_call = quote! { self.append(&call, vec![]) };
+    let append_args = quote! { &call, #fds_init };
     #[cfg(not(feature = "std"))]
-    let append_call = quote! { self.append(&call) };
+    let append_args = quote! { &call };
 
     let impl_method = quote! {
         fn #method_name(
@@ -186,7 +238,7 @@ fn generate_no_params_method(
                 }
                 MethodWrapper::Method
             });
-            #append_call
+            self.append(#append_args)
         }
     };
 
@@ -199,19 +251,21 @@ fn generate_with_params_method(
     method_path: &str,
     generics: TokenStream,
     combined_where_clause: TokenStream,
-    param_fields: Vec<TokenStream>,
+    all_param_fields: Vec<TokenStream>,
+    regular_param_fields: Vec<TokenStream>,
     arg_names: Vec<&syn::Ident>,
     method_generic_params: &syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]>,
     method_where_clause: &Option<syn::WhereClause>,
     has_any_lifetime: bool,
     has_explicit_lifetimes: bool,
+    #[cfg(feature = "std")] fds_init: TokenStream,
     crate_path: &TokenStream,
 ) -> Result<(TokenStream, TokenStream), Error> {
     let trait_method = quote! {
         /// Add a #method_name call to this chain.
         fn #method_name #generics(
             self,
-            #(#param_fields,)*
+            #(#all_param_fields,)*
         ) -> #crate_path::Result<
             #crate_path::connection::chain::Chain<'c, S, ReplyParams, ReplyError>
         >
@@ -245,14 +299,14 @@ fn generate_with_params_method(
     let struct_where = build_struct_where_clause(method_generic_params, method_where_clause);
 
     #[cfg(feature = "std")]
-    let append_call = quote! { self.append(&call, vec![]) };
+    let append_args = quote! { &call, #fds_init };
     #[cfg(not(feature = "std"))]
-    let append_call = quote! { self.append(&call) };
+    let append_args = quote! { &call };
 
     let impl_method = quote! {
         fn #method_name #generics(
             self,
-            #(#param_fields,)*
+            #(#all_param_fields,)*
         ) -> #crate_path::Result<
             #crate_path::connection::chain::Chain<'c, S, ReplyParams, ReplyError>
         >
@@ -263,7 +317,7 @@ fn generate_with_params_method(
                 struct #params_struct_name #generics
                 #struct_where
                 {
-                    #(#param_fields,)*
+                    #(#regular_param_fields,)*
                 }
 
                 #[derive(::serde::Serialize, ::core::fmt::Debug)]
@@ -279,7 +333,7 @@ fn generate_with_params_method(
                     #(#arg_names,)*
                 })
             });
-            #append_call
+            self.append(#append_args)
         }
     };
 

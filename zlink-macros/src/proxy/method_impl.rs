@@ -15,6 +15,7 @@ pub(super) fn generate_method_impl(
     trait_generics: &syn::Generics,
     method_attrs: &MethodAttrs,
     crate_path: &TokenStream,
+    param_attrs_map: &std::collections::HashMap<String, ParamAttrs>,
 ) -> Result<TokenStream, Error> {
     let method_name = &method.sig.ident;
     let method_name_str = method_name.to_string();
@@ -33,10 +34,9 @@ pub(super) fn generate_method_impl(
     let method_output = method.sig.output.clone();
 
     // Process all method arguments in a single pass
-    let arg_infos = parse_method_arguments(method, has_explicit_lifetimes)?;
+    let arg_infos = parse_method_arguments(method, has_explicit_lifetimes, param_attrs_map)?;
 
     // Extract the data we need from the processed arguments
-    let arg_names: Vec<_> = arg_infos.iter().map(|info| info.name).collect();
     let has_any_lifetime = arg_infos.iter().any(|info| info.has_lifetime);
 
     // Check for incompatible attributes
@@ -46,6 +46,32 @@ pub(super) fn generate_method_impl(
             "method cannot be both streaming (`more`) and oneway (`oneway`)",
         ));
     }
+    if method_attrs.is_oneway && method_attrs.return_fds {
+        return Err(Error::new_spanned(
+            &method.sig,
+            "method cannot be both oneway (`oneway`) and return file descriptors (`return_fds`)",
+        ));
+    }
+
+    // Validate FD parameters
+    let fds_params: Vec<_> = arg_infos.iter().filter(|info| info.is_fds).collect();
+    if fds_params.len() > 1 {
+        return Err(Error::new_spanned(
+            &method.sig,
+            "method can have at most one parameter marked with #[zlink(fds)]",
+        ));
+    }
+
+    // Validate that FD attributes require the `std` feature
+    #[cfg(not(feature = "std"))]
+    {
+        if !fds_params.is_empty() || method_attrs.return_fds {
+            return Err(Error::new_spanned(
+                &method.sig,
+                "FD-related attributes (`#[zlink(fds)]` and `#[zlink(return_fds)]`) require the `std` feature to be enabled.",
+            ));
+        }
+    }
 
     // Parse return type
     let (reply_type, error_type) = if method_attrs.is_oneway {
@@ -53,13 +79,25 @@ pub(super) fn generate_method_impl(
         // since we don't use them in the generated code
         (syn::parse_quote!(()), syn::parse_quote!(#crate_path::Error))
     } else {
-        parse_return_type(&method_output, method_attrs.is_streaming)?
+        parse_return_type(
+            &method_output,
+            method_attrs.is_streaming,
+            method_attrs.return_fds,
+        )?
     };
 
     // Generate the method parameters as an Option
-    let (params_struct_def, params_init) = generate_method_params(
+    #[cfg(feature = "std")]
+    let (params_struct_def, params_init, fds_init) = generate_method_params(
         &arg_infos,
-        &arg_names,
+        &method_generics,
+        trait_generics,
+        has_any_lifetime,
+        has_explicit_lifetimes,
+    );
+    #[cfg(not(feature = "std"))]
+    let (params_struct_def, params_init, _fds_init) = generate_method_params(
+        &arg_infos,
         &method_generics,
         trait_generics,
         has_any_lifetime,
@@ -99,13 +137,21 @@ pub(super) fn generate_method_impl(
 
     // Generate return type and implementation based on method attributes
     let (return_type, implementation) = if method_attrs.is_oneway {
-        generate_oneway_method(method_call_setup, crate_path)
+        generate_oneway_method(
+            method_call_setup,
+            #[cfg(feature = "std")]
+            fds_init,
+            crate_path,
+        )
     } else if method_attrs.is_streaming {
         generate_streaming_method(
             method_call_setup,
             &reply_type,
             &error_type,
             out_params_extract,
+            method_attrs.return_fds,
+            #[cfg(feature = "std")]
+            fds_init,
             crate_path,
         )
     } else {
@@ -114,6 +160,9 @@ pub(super) fn generate_method_impl(
             &reply_type,
             &error_type,
             out_params_extract,
+            method_attrs.return_fds,
+            #[cfg(feature = "std")]
+            fds_init,
             crate_path,
         )
     };
@@ -134,6 +183,7 @@ pub(super) fn generate_method_impl(
 fn parse_method_arguments<'a>(
     method: &'a mut syn::TraitItemFn,
     has_explicit_lifetimes: bool,
+    param_attrs_map: &std::collections::HashMap<String, ParamAttrs>,
 ) -> Result<Vec<ArgInfo<'a>>, Error> {
     method
         .sig
@@ -151,10 +201,11 @@ fn parse_method_arguments<'a>(
             let name = &pat_ident.ident;
             let ty = &pat_type.ty;
 
-            // Extract parameter rename attribute
-            let serialized_name = extract_param_rename_attr(&mut pat_type.attrs)
-                .ok()
-                .flatten();
+            // Get pre-extracted parameter attributes
+            let param_name = name.to_string();
+            let param_attrs = param_attrs_map.get(&param_name);
+            let serialized_name = param_attrs.and_then(|attrs| attrs.rename.clone());
+            let is_fds = param_attrs.map(|attrs| attrs.is_fds).unwrap_or(false);
 
             // Check if the type is optional
             let is_optional = is_option_type(ty);
@@ -175,6 +226,7 @@ fn parse_method_arguments<'a>(
                 is_optional,
                 has_lifetime,
                 serialized_name,
+                is_fds,
             }))
         })
         .collect()
@@ -182,16 +234,29 @@ fn parse_method_arguments<'a>(
 
 fn generate_method_params(
     arg_infos: &[ArgInfo<'_>],
-    arg_names: &[&syn::Ident],
     method_generics: &syn::Generics,
     trait_generics: &syn::Generics,
     has_any_lifetime: bool,
     has_explicit_lifetimes: bool,
-) -> (TokenStream, TokenStream) {
-    if !arg_names.is_empty() {
-        // Collect which type parameters are actually used in method arguments
+) -> (TokenStream, TokenStream, TokenStream) {
+    // Find FD parameters
+    let fds_params: Vec<_> = arg_infos.iter().filter(|info| info.is_fds).collect();
+
+    // Generate FD initialization
+    let fds_init = if let Some(fd_param) = fds_params.first() {
+        let fd_name = fd_param.name;
+        quote! { #fd_name }
+    } else {
+        quote! { ::std::vec::Vec::new() }
+    };
+
+    // Check if we have any regular (non-FD) parameters
+    let has_regular_params = arg_infos.iter().any(|info| !info.is_fds);
+
+    if has_regular_params {
+        // Collect which type parameters are actually used in regular (non-FD) method arguments
         let mut used_type_params = HashSet::new();
-        for info in arg_infos {
+        for info in arg_infos.iter().filter(|info| !info.is_fds) {
             collect_used_type_params(&info.ty_for_params, &mut used_type_params);
         }
 
@@ -236,34 +301,38 @@ fn generate_method_params(
             quote! {}
         };
 
-        // Generate struct fields with optional serde attributes
-        let struct_fields = arg_infos.iter().map(|info| {
-            let name = info.name;
-            let ty = &info.ty_for_params;
+        // Generate struct fields with optional serde attributes (excluding FD parameters)
+        let struct_fields: Vec<_> = arg_infos
+            .iter()
+            .filter(|info| !info.is_fds) // Filter out FD parameters
+            .map(|info| {
+                let name = info.name;
+                let ty = &info.ty_for_params;
 
-            let serde_attrs = if let Some(ref renamed) = info.serialized_name {
-                if info.is_optional {
+                let serde_attrs = if let Some(ref renamed) = info.serialized_name {
+                    if info.is_optional {
+                        quote! {
+                            #[serde(rename = #renamed, skip_serializing_if = "Option::is_none")]
+                        }
+                    } else {
+                        quote! {
+                            #[serde(rename = #renamed)]
+                        }
+                    }
+                } else if info.is_optional {
                     quote! {
-                        #[serde(rename = #renamed, skip_serializing_if = "Option::is_none")]
+                        #[serde(skip_serializing_if = "Option::is_none")]
                     }
                 } else {
-                    quote! {
-                        #[serde(rename = #renamed)]
-                    }
-                }
-            } else if info.is_optional {
-                quote! {
-                    #[serde(skip_serializing_if = "Option::is_none")]
-                }
-            } else {
-                quote! {}
-            };
+                    quote! {}
+                };
 
-            quote! {
-                #serde_attrs
-                #name: #ty
-            }
-        });
+                quote! {
+                    #serde_attrs
+                    #name: #ty
+                }
+            })
+            .collect();
 
         // Add where clause with bounds from method's where clause for used type parameters
         let params_where_clause = build_params_where_clause(method_generics, &used_type_params);
@@ -277,13 +346,20 @@ fn generate_method_params(
             }
         };
 
+        // Get names from regular params for struct initialization
+        let regular_arg_names: Vec<_> = arg_infos
+            .iter()
+            .filter(|info| !info.is_fds)
+            .map(|info| info.name)
+            .collect();
+
         let init = quote! {
             let params = Some(Params {
-                #(#arg_names,)*
+                #(#regular_arg_names,)*
             });
         };
 
-        (struct_def, init)
+        (struct_def, init, fds_init)
     } else {
         (
             quote! {},
@@ -291,6 +367,7 @@ fn generate_method_params(
                 // No parameters for methods without arguments
                 let params: Option<()> = None;
             },
+            fds_init,
         )
     }
 }
@@ -334,6 +411,7 @@ fn build_params_where_clause(
 
 fn generate_oneway_method(
     method_call_setup: TokenStream,
+    #[cfg(feature = "std")] fds_init: TokenStream,
     crate_path: &TokenStream,
 ) -> (TokenStream, TokenStream) {
     let return_type = quote! {
@@ -341,45 +419,65 @@ fn generate_oneway_method(
     };
 
     #[cfg(feature = "std")]
-    let send_call = quote! { self.send_call(&call, vec![]).await?; };
+    let send_call_args = quote! { &call, #fds_init };
     #[cfg(not(feature = "std"))]
-    let send_call = quote! { self.send_call(&call).await?; };
+    let send_call_args = quote! { &call };
 
     let implementation = quote! {
         #method_call_setup
-
         let call = #crate_path::Call::new(method_call).set_oneway(true);
-        #send_call
+        self.send_call(#send_call_args).await?;
         Ok(())
     };
+
     (return_type, implementation)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_streaming_method(
     method_call_setup: TokenStream,
     reply_type: &Type,
     error_type: &Type,
     out_params_extract: TokenStream,
+    return_fds: bool,
+    #[cfg(feature = "std")] fds_init: TokenStream,
     crate_path: &TokenStream,
 ) -> (TokenStream, TokenStream) {
-    let return_type = quote! {
-        #crate_path::Result<
-            impl ::futures_util::stream::Stream<
-                Item = #crate_path::Result<::core::result::Result<#reply_type, #error_type>>
+    let return_type = if return_fds {
+        quote! {
+            #crate_path::Result<
+                impl ::futures_util::stream::Stream<
+                    Item = #crate_path::Result<(::core::result::Result<#reply_type, #error_type>, ::std::vec::Vec<::std::os::fd::OwnedFd>)>
+                >
             >
-        >
+        }
+    } else {
+        quote! {
+            #crate_path::Result<
+                impl ::futures_util::stream::Stream<
+                    Item = #crate_path::Result<::core::result::Result<#reply_type, #error_type>>
+                >
+            >
+        }
     };
 
     #[cfg(feature = "std")]
-    let send_call = quote! { self.send_call(&call, vec![]).await?; };
+    let send_call_args = quote! { &call, #fds_init };
     #[cfg(not(feature = "std"))]
-    let send_call = quote! { self.send_call(&call).await?; };
+    let send_call_args = quote! { &call };
+
+    let send_and_receive = quote! {
+        #method_call_setup
+        let call = #crate_path::Call::new(method_call).set_more(true);
+        self.send_call(#send_call_args).await?;
+    };
 
     #[cfg(feature = "std")]
     let receive_and_return = quote! {
         let (reply, fds) = conn.receive_reply::<#reply_type, #error_type>().await?;
         Ok((reply, fds))
     };
+
     #[cfg(not(feature = "std"))]
     let receive_and_return = quote! {
         let reply = conn.receive_reply::<#reply_type, #error_type>().await?;
@@ -387,15 +485,30 @@ fn generate_streaming_method(
     };
 
     #[cfg(feature = "std")]
-    let map_stream = quote! {
-        stream.map(|result| {
-            match result {
-                Ok((Ok(reply), _fds)) => #out_params_extract,
-                Ok((Err(error), _fds)) => Ok(Err(error)),
-                Err(err) => Err(err),
-            }
-        })
+    let map_stream = if return_fds {
+        quote! {
+            stream.map(|result| {
+                match result {
+                    Ok((Ok(reply), fds)) => {
+                        #out_params_extract.map(|r| (r, fds))
+                    }
+                    Ok((Err(error), fds)) => Ok((Err(error), fds)),
+                    Err(err) => Err(err),
+                }
+            })
+        }
+    } else {
+        quote! {
+            stream.map(|result| {
+                match result {
+                    Ok((Ok(reply), _fds)) => #out_params_extract,
+                    Ok((Err(error), _fds)) => Ok(Err(error)),
+                    Err(err) => Err(err),
+                }
+            })
+        }
     };
+
     #[cfg(not(feature = "std"))]
     let map_stream = quote! {
         stream.map(|result| {
@@ -408,10 +521,7 @@ fn generate_streaming_method(
     };
 
     let implementation = quote! {
-        #method_call_setup
-
-        let call = #crate_path::Call::new(method_call).set_more(true);
-        #send_call
+        #send_and_receive
 
         let stream = #crate_path::connection::chain::ReplyStream::new(
             self.read_mut(),
@@ -427,36 +537,65 @@ fn generate_streaming_method(
     (return_type, implementation)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_regular_method(
     method_call_setup: TokenStream,
     reply_type: &Type,
     error_type: &Type,
     out_params_extract: TokenStream,
+    return_fds: bool,
+    #[cfg(feature = "std")] fds_init: TokenStream,
     crate_path: &TokenStream,
 ) -> (TokenStream, TokenStream) {
-    let return_type = quote! {
-        #crate_path::Result<::core::result::Result<#reply_type, #error_type>>
+    // Generate return type - use FD types only if method returns FDs
+    let return_type = if return_fds {
+        quote! {
+            #crate_path::Result<(::core::result::Result<#reply_type, #error_type>, ::std::vec::Vec<::std::os::fd::OwnedFd>)>
+        }
+    } else {
+        quote! {
+            #crate_path::Result<::core::result::Result<#reply_type, #error_type>>
+        }
     };
 
     #[cfg(feature = "std")]
-    let call_method = quote! {
-        let (result, _fds) = self.call_method::<_, #reply_type, #error_type>(&call, vec![]).await?;
-    };
+    let call_method_args = quote! { &call, #fds_init };
     #[cfg(not(feature = "std"))]
-    let call_method = quote! {
-        let result = self.call_method::<_, #reply_type, #error_type>(&call).await?;
+    let call_method_args = quote! { &call };
+
+    #[cfg(feature = "std")]
+    let (receive_result, ok_arm, err_arm) = if return_fds {
+        // Method returns FDs - must receive FDs from API
+        (
+            quote! { let (result, fds) = },
+            quote! { #out_params_extract.map(|r| (r, fds)) },
+            quote! { Ok((Err(error), fds)) },
+        )
+    } else {
+        // Method doesn't return FDs - ignore any returned FDs
+        (
+            quote! { let (result, _fds) = },
+            quote! { #out_params_extract },
+            quote! { Ok(Err(error)) },
+        )
     };
+
+    #[cfg(not(feature = "std"))]
+    let (receive_result, ok_arm, err_arm) = (
+        quote! { let result = },
+        quote! { #out_params_extract },
+        quote! { Ok(Err(error)) },
+    );
 
     let implementation = quote! {
         #method_call_setup
-
         let call = #crate_path::Call::new(method_call);
-        #call_method
-
+        #receive_result self.call_method::<_, #reply_type, #error_type>(#call_method_args).await?;
         match result {
-            Ok(reply) => #out_params_extract,
-            Err(error) => Ok(Err(error)),
+            Ok(reply) => #ok_arm,
+            Err(error) => #err_arm,
         }
     };
+
     (return_type, implementation)
 }
