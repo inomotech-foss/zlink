@@ -2,7 +2,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_quote, Data, DataEnum, DeriveInput, Error, Fields, FieldsNamed};
 
-use crate::utils::*;
+use crate::utils::{convert_type_lifetimes, parse_zlink_string_attr};
 
 /// Main entry point for the ReplyError derive macro that generates serde implementations.
 ///
