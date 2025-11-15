@@ -7,6 +7,8 @@
 mod basic;
 #[path = "proxy/complex_lifetimes.rs"]
 mod complex_lifetimes;
+#[path = "proxy/fd_passing.rs"]
+mod fd_passing;
 #[path = "proxy/generics.rs"]
 mod generics;
 #[path = "proxy/lifetimes.rs"]

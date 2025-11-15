@@ -11,6 +11,8 @@ pub(super) struct MethodAttrs {
     pub is_streaming: bool,
     /// Method is one-way (fire and forget).
     pub is_oneway: bool,
+    /// Method returns file descriptors.
+    pub return_fds: bool,
 }
 
 impl MethodAttrs {
@@ -36,6 +38,15 @@ impl MethodAttrs {
                         }
                         method_attrs.is_oneway = true;
                     }
+                    Meta::Path(path) if path.is_ident("return_fds") => {
+                        if method_attrs.return_fds {
+                            return Err(Error::new_spanned(
+                                &meta,
+                                "duplicate `return_fds` attribute",
+                            ));
+                        }
+                        method_attrs.return_fds = true;
+                    }
                     _ => {
                         return Err(Error::new_spanned(&meta, "unknown zlink attribute"));
                     }
@@ -55,4 +66,5 @@ pub(super) struct ArgInfo<'a> {
     pub has_lifetime: bool,
     pub is_optional: bool,
     pub serialized_name: Option<String>,
+    pub is_fds: bool,
 }

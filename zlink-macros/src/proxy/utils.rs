@@ -147,23 +147,37 @@ pub(super) fn parse_rename_value(expr: &Expr) -> Result<Option<String>, Error> {
     }
 }
 
-/// Extract parameter rename attribute from zlink attributes and remove processed attributes.
-pub(super) fn extract_param_rename_attr(
-    attrs: &mut Vec<Attribute>,
-) -> Result<Option<String>, Error> {
-    let rename_result = extract_zlink_attrs(attrs, |meta_items| {
-        let mut rename_value = None;
+/// Parameter attributes extracted from #[zlink(...)] on parameters.
+#[derive(Default)]
+pub(super) struct ParamAttrs {
+    pub rename: Option<String>,
+    pub is_fds: bool,
+}
+
+/// Extract parameter attributes from zlink attributes and remove processed attributes.
+pub(super) fn extract_param_attrs(attrs: &mut Vec<Attribute>) -> Result<ParamAttrs, Error> {
+    let attrs_result = extract_zlink_attrs(attrs, |meta_items| {
+        let mut param_attrs = ParamAttrs::default();
 
         for meta in meta_items {
             match &meta {
                 Meta::NameValue(nv) if nv.path.is_ident("rename") => {
-                    if rename_value.is_some() {
+                    if param_attrs.rename.is_some() {
                         return Err(Error::new_spanned(
                             &meta,
                             "duplicate `rename` attribute on parameter",
                         ));
                     }
-                    rename_value = parse_rename_value(&nv.value)?;
+                    param_attrs.rename = parse_rename_value(&nv.value)?;
+                }
+                Meta::Path(path) if path.is_ident("fds") => {
+                    if param_attrs.is_fds {
+                        return Err(Error::new_spanned(
+                            &meta,
+                            "duplicate `fds` attribute on parameter",
+                        ));
+                    }
+                    param_attrs.is_fds = true;
                 }
                 _ => {
                     return Err(Error::new_spanned(
@@ -174,9 +188,9 @@ pub(super) fn extract_param_rename_attr(
             }
         }
 
-        Ok(rename_value)
+        Ok(param_attrs)
     });
-    Ok(rename_result.unwrap_or(None))
+    Ok(attrs_result.unwrap_or_default())
 }
 
 /// Build a combined where clause from existing constraints, new constraint, and generic bounds.
@@ -210,6 +224,7 @@ pub(super) fn build_combined_where_clause(
 pub(super) fn parse_return_type(
     output: &ReturnType,
     is_streaming: bool,
+    return_fds: bool,
 ) -> Result<(Type, Type), Error> {
     match output {
         ReturnType::Default => Err(Error::new_spanned(
@@ -217,9 +232,16 @@ pub(super) fn parse_return_type(
             "proxy methods must have a return type",
         )),
         ReturnType::Type(_, ty) => {
-            if is_streaming {
+            if is_streaming && return_fds {
+                // For streaming methods with FDs, expect Result<impl Stream<Item =
+                // Result<(Result<T, E>, Vec<OwnedFd>)>>>
+                extract_streaming_with_fds_result_types(ty)
+            } else if is_streaming {
                 // For streaming methods, expect Result<impl Stream<Item = Result<Result<T, E>>>>
                 extract_streaming_result_types(ty)
+            } else if return_fds {
+                // For FD-returning methods, expect Result<(Result<T, E>, Vec<OwnedFd>)>
+                extract_fds_result_types(ty)
             } else {
                 // Extract Result<Result<T, E>> or impl Future<Output = Result<Result<T, E>>>
                 extract_nested_result_types(ty)
@@ -235,6 +257,18 @@ fn extract_nested_result_types(ty: &Type) -> Result<(Type, Type), Error> {
     match ty {
         Type::Path(type_path) => extract_result_from_path(type_path, ERROR_MSG),
         Type::ImplTrait(impl_trait) => extract_from_future_output(impl_trait, ERROR_MSG),
+        _ => Err(Error::new_spanned(ty, ERROR_MSG)),
+    }
+}
+
+fn extract_fds_result_types(ty: &Type) -> Result<(Type, Type), Error> {
+    const ERROR_MSG: &str = "expected Result<(Result<ReplyType, ErrorType>, Vec<OwnedFd>)> or \
+                             impl Future<Output = Result<(Result<ReplyType, ErrorType>, \
+                             Vec<OwnedFd>)>>";
+
+    match ty {
+        Type::Path(type_path) => extract_fds_result_from_path(type_path, ERROR_MSG),
+        Type::ImplTrait(impl_trait) => extract_fds_from_future_output(impl_trait, ERROR_MSG),
         _ => Err(Error::new_spanned(ty, ERROR_MSG)),
     }
 }
@@ -334,6 +368,76 @@ fn extract_inner_result_types(ty: &Type) -> Result<(Type, Type), Error> {
     }
 }
 
+fn extract_fds_result_from_path(
+    type_path: &syn::TypePath,
+    error_msg: &str,
+) -> Result<(Type, Type), Error> {
+    let segment = type_path
+        .path
+        .segments
+        .last()
+        .ok_or_else(|| Error::new_spanned(type_path, error_msg))?;
+
+    if segment.ident != "Result" {
+        return Err(Error::new_spanned(type_path, error_msg));
+    }
+
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Err(Error::new_spanned(type_path, error_msg));
+    };
+
+    let GenericArgument::Type(tuple_ty) = args
+        .args
+        .first()
+        .ok_or_else(|| Error::new_spanned(type_path, error_msg))?
+    else {
+        return Err(Error::new_spanned(type_path, error_msg));
+    };
+
+    extract_tuple_result_and_fds(tuple_ty, error_msg)
+}
+
+fn extract_fds_from_future_output(
+    impl_trait: &syn::TypeImplTrait,
+    error_msg: &str,
+) -> Result<(Type, Type), Error> {
+    impl_trait
+        .bounds
+        .iter()
+        .find_map(|bound| {
+            let syn::TypeParamBound::Trait(trait_bound) = bound else {
+                return None;
+            };
+            let segment = trait_bound.path.segments.last()?;
+            if segment.ident != "Future" {
+                return None;
+            }
+            let PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return None;
+            };
+            args.args.iter().find_map(|arg| match arg {
+                GenericArgument::AssocType(assoc) if assoc.ident == "Output" => {
+                    Some(extract_fds_result_types(&assoc.ty))
+                }
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| Err(Error::new_spanned(impl_trait, error_msg)))
+}
+
+fn extract_tuple_result_and_fds(ty: &Type, error_msg: &str) -> Result<(Type, Type), Error> {
+    let Type::Tuple(tuple) = ty else {
+        return Err(Error::new_spanned(ty, error_msg));
+    };
+
+    if tuple.elems.len() != 2 {
+        return Err(Error::new_spanned(ty, error_msg));
+    }
+
+    // Extract Result<T, E> from first element
+    extract_inner_result_types(&tuple.elems[0])
+}
+
 fn extract_streaming_result_types(ty: &Type) -> Result<(Type, Type), Error> {
     const ERROR_MSG: &str =
         "expected Result<impl Stream<Item = Result<Result<ReplyType, ErrorType>>>>";
@@ -429,6 +533,105 @@ fn extract_stream_item_types(ty: &Type) -> Result<(Type, Type), Error> {
         _ => Err(Error::new_spanned(
             ty,
             "expected impl Stream<Item = Result<Result<ReplyType, ErrorType>>>",
+        )),
+    }
+}
+
+fn extract_streaming_with_fds_result_types(ty: &Type) -> Result<(Type, Type), Error> {
+    const ERROR_MSG: &str =
+        "expected Result<impl Stream<Item = Result<(Result<ReplyType, ErrorType>, Vec<OwnedFd>)>>>";
+
+    match ty {
+        Type::Path(type_path) => {
+            // Direct Result<impl Stream<...>>
+            let segment = type_path
+                .path
+                .segments
+                .last()
+                .ok_or_else(|| Error::new_spanned(type_path, ERROR_MSG))?;
+
+            if segment.ident != "Result" {
+                return Err(Error::new_spanned(type_path, ERROR_MSG));
+            }
+
+            let PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return Err(Error::new_spanned(type_path, ERROR_MSG));
+            };
+
+            let GenericArgument::Type(stream_ty) = args
+                .args
+                .first()
+                .ok_or_else(|| Error::new_spanned(type_path, ERROR_MSG))?
+            else {
+                return Err(Error::new_spanned(type_path, ERROR_MSG));
+            };
+
+            extract_stream_item_fds_types(stream_ty)
+        }
+        Type::ImplTrait(impl_trait) => {
+            // impl Future<Output = Result<impl Stream<...>>>
+            impl_trait
+                .bounds
+                .iter()
+                .find_map(|bound| {
+                    let syn::TypeParamBound::Trait(trait_bound) = bound else {
+                        return None;
+                    };
+                    let segment = trait_bound.path.segments.last()?;
+                    if segment.ident != "Future" {
+                        return None;
+                    }
+                    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+                        return None;
+                    };
+                    args.args.iter().find_map(|arg| match arg {
+                        GenericArgument::AssocType(assoc) if assoc.ident == "Output" => {
+                            Some(extract_streaming_with_fds_result_types(&assoc.ty))
+                        }
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| Err(Error::new_spanned(impl_trait, ERROR_MSG)))
+        }
+        _ => Err(Error::new_spanned(ty, ERROR_MSG)),
+    }
+}
+
+fn extract_stream_item_fds_types(ty: &Type) -> Result<(Type, Type), Error> {
+    match ty {
+        Type::ImplTrait(impl_trait) => {
+            // impl Stream<Item = Result<(Result<T, E>, Vec<OwnedFd>)>>
+            impl_trait
+                .bounds
+                .iter()
+                .find_map(|bound| {
+                    let syn::TypeParamBound::Trait(trait_bound) = bound else {
+                        return None;
+                    };
+                    let segment = trait_bound.path.segments.last()?;
+                    if segment.ident != "Stream" {
+                        return None;
+                    }
+                    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+                        return None;
+                    };
+                    args.args.iter().find_map(|arg| match arg {
+                        GenericArgument::AssocType(assoc) if assoc.ident == "Item" => {
+                            Some(extract_fds_result_types(&assoc.ty))
+                        }
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| {
+                    Err(Error::new_spanned(
+                        ty,
+                        "expected impl Stream<Item = Result<(Result<ReplyType, ErrorType>, Vec<OwnedFd>)>>",
+                    ))
+                })
+        }
+        _ => Err(Error::new_spanned(
+            ty,
+            "expected impl Stream<Item = Result<(Result<ReplyType, ErrorType>, Vec<OwnedFd>)>>",
         )),
     }
 }

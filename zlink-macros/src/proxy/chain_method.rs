@@ -4,8 +4,15 @@ use syn::{Error, FnArg, Pat};
 
 use super::{
     types::{ArgInfo, MethodAttrs},
-    utils::{convert_to_single_lifetime, snake_case_to_pascal_case, type_contains_lifetime},
+    utils::{
+        convert_to_single_lifetime, snake_case_to_pascal_case, type_contains_lifetime, ParamAttrs,
+    },
 };
+
+#[cfg(feature = "std")]
+type MethodCallResult = (TokenStream, TokenStream);
+#[cfg(not(feature = "std"))]
+type MethodCallResult = TokenStream;
 
 pub(super) fn generate_chain_method(
     method: &mut syn::TraitItemFn,
@@ -13,6 +20,7 @@ pub(super) fn generate_chain_method(
     _trait_generics: &syn::Generics,
     method_attrs: &MethodAttrs,
     crate_path: &TokenStream,
+    param_attrs_map: &std::collections::HashMap<String, ParamAttrs>,
 ) -> Result<(TokenStream, TokenStream), Error> {
     let method_name_str = method.sig.ident.to_string();
     let method_ident = method.sig.ident.clone();
@@ -22,7 +30,8 @@ pub(super) fn generate_chain_method(
     let has_explicit_lifetimes = method.sig.generics.lifetimes().next().is_some();
 
     // Skip chain methods for oneway methods since they don't get replies
-    if method_attrs.is_oneway {
+    // Also skip for methods that return FDs since chains don't support returning FDs
+    if method_attrs.is_oneway || method_attrs.return_fds {
         return Ok((quote! {}, quote! {}));
     }
 
@@ -38,8 +47,7 @@ pub(super) fn generate_chain_method(
     let method_where_clause = method.sig.generics.where_clause.clone();
 
     // Parse method arguments (skip &mut self)
-    let arg_infos = parse_method_arguments(method, has_explicit_lifetimes)?;
-    let arg_names: Vec<_> = arg_infos.iter().map(|info| info.name).collect();
+    let arg_infos = parse_method_arguments(method, has_explicit_lifetimes, param_attrs_map)?;
     let has_any_lifetime = arg_infos.iter().any(|info| info.has_lifetime);
 
     // Handle lifetimes for function signature - only add if no explicit lifetimes
@@ -80,10 +88,18 @@ pub(super) fn generate_chain_method(
         #chain_where;
     };
 
+    // Validate FD parameters
+    let fds_params: Vec<_> = arg_infos.iter().filter(|info| info.is_fds).collect();
+    if fds_params.len() > 1 {
+        return Err(Error::new_spanned(
+            &method.sig,
+            "method can have at most one parameter marked with #[zlink(fds)]",
+        ));
+    }
+
     // Generate the method call creation code for the implementation
-    let method_call_creation = generate_method_call_creation(
+    let ret = generate_method_call_creation(
         &arg_infos,
-        &arg_names,
         &method_ident,
         &method_path,
         &method_generic_params,
@@ -92,12 +108,15 @@ pub(super) fn generate_chain_method(
         has_explicit_lifetimes,
         crate_path,
     );
-
-    // Generate the implementation method
     #[cfg(feature = "std")]
-    let chain_call = quote! { self.chain_call(&call, vec![]) };
+    let (method_call_creation, fds_init) = ret;
     #[cfg(not(feature = "std"))]
-    let chain_call = quote! { self.chain_call(&call) };
+    let method_call_creation = ret;
+
+    #[cfg(feature = "std")]
+    let chain_call_args = quote! { &call, #fds_init };
+    #[cfg(not(feature = "std"))]
+    let chain_call_args = quote! { &call };
 
     let impl_method = quote! {
         fn #chain_method_name<#all_generics>(
@@ -109,7 +128,7 @@ pub(super) fn generate_chain_method(
         #chain_where
         {
             #method_call_creation
-            #chain_call
+            self.chain_call(#chain_call_args)
         }
     };
 
@@ -119,6 +138,7 @@ pub(super) fn generate_chain_method(
 fn parse_method_arguments<'a>(
     method: &'a mut syn::TraitItemFn,
     has_explicit_lifetimes: bool,
+    param_attrs_map: &std::collections::HashMap<String, ParamAttrs>,
 ) -> Result<Vec<ArgInfo<'a>>, Error> {
     method
         .sig
@@ -136,6 +156,12 @@ fn parse_method_arguments<'a>(
             let name = &pat_ident.ident;
             let ty = &pat_type.ty;
 
+            // Get pre-extracted parameter attributes
+            let param_name = name.to_string();
+            let param_attrs = param_attrs_map.get(&param_name);
+            let serialized_name = param_attrs.and_then(|attrs| attrs.rename.clone());
+            let is_fds = param_attrs.map(|attrs| attrs.is_fds).unwrap_or(false);
+
             // Only convert to single lifetime if there are no explicit lifetimes
             let ty_for_params = if has_explicit_lifetimes {
                 (**ty).clone()
@@ -151,7 +177,8 @@ fn parse_method_arguments<'a>(
                 ty_for_params,
                 has_lifetime,
                 is_optional: false,
-                serialized_name: None,
+                serialized_name,
+                is_fds,
             }))
         })
         .collect()
@@ -182,7 +209,6 @@ fn build_chain_where_clause(method_where_clause: &Option<syn::WhereClause>) -> s
 #[allow(clippy::too_many_arguments)]
 fn generate_method_call_creation(
     arg_infos: &[ArgInfo<'_>],
-    arg_names: &[&syn::Ident],
     method_name: &syn::Ident,
     method_path: &str,
     method_generic_params: &syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]>,
@@ -190,9 +216,24 @@ fn generate_method_call_creation(
     has_any_lifetime: bool,
     has_explicit_lifetimes: bool,
     crate_path: &TokenStream,
-) -> TokenStream {
-    if !arg_names.is_empty() {
-        let param_fields: Vec<_> = arg_infos
+) -> MethodCallResult {
+    // Separate FD parameters from regular parameters
+    let regular_params: Vec<_> = arg_infos.iter().filter(|info| !info.is_fds).collect();
+    let regular_arg_names: Vec<_> = regular_params.iter().map(|info| info.name).collect();
+
+    // Generate FD initialization (only for std)
+    #[cfg(feature = "std")]
+    let fds_params: Vec<_> = arg_infos.iter().filter(|info| info.is_fds).collect();
+    #[cfg(feature = "std")]
+    let fds_init = if let Some(fd_param) = fds_params.first() {
+        let fd_name = fd_param.name;
+        quote! { #fd_name }
+    } else {
+        quote! { ::std::vec::Vec::new() }
+    };
+
+    if !regular_params.is_empty() {
+        let param_fields: Vec<_> = regular_params
             .iter()
             .map(|info| {
                 let name = info.name;
@@ -234,7 +275,7 @@ fn generate_method_call_creation(
             method_name.span(),
         );
 
-        quote! {
+        let method_call_creation = quote! {
             #[derive(::serde::Serialize, ::core::fmt::Debug)]
             struct #params_struct_name #struct_generics
             #struct_where
@@ -252,10 +293,15 @@ fn generate_method_call_creation(
             }
 
             let method_call = #wrapper_enum_name::Method(#params_struct_name {
-                #(#arg_names,)*
+                #(#regular_arg_names,)*
             });
             let call = #crate_path::Call::new(method_call);
-        }
+        };
+
+        #[cfg(feature = "std")]
+        return (method_call_creation, fds_init);
+        #[cfg(not(feature = "std"))]
+        return method_call_creation;
     } else {
         // Create unique enum name for this method to avoid conflicts
         let wrapper_enum_name = syn::Ident::new(
@@ -266,7 +312,7 @@ fn generate_method_call_creation(
             method_name.span(),
         );
 
-        quote! {
+        let method_call_creation = quote! {
             #[derive(::serde::Serialize, ::core::fmt::Debug)]
             #[serde(tag = "method")]
             enum #wrapper_enum_name {
@@ -276,7 +322,12 @@ fn generate_method_call_creation(
 
             let method_call = #wrapper_enum_name::Method;
             let call = #crate_path::Call::new(method_call);
-        }
+        };
+
+        #[cfg(feature = "std")]
+        return (method_call_creation, fds_init);
+        #[cfg(not(feature = "std"))]
+        return method_call_creation;
     }
 }
 

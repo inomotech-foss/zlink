@@ -616,6 +616,155 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 /// ErrorType>>>>`. The proxy will automatically set the 'more' flag on the call and return a
 /// stream of replies.
 ///
+/// # File Descriptor Passing
+///
+/// **Requires the `std` feature to be enabled.**
+///
+/// Methods can send and receive file descriptors using the following attributes:
+///
+/// ## Sending File Descriptors
+///
+/// Use `#[zlink(fds)]` on a parameter of type `Vec<OwnedFd>` to send file descriptors with the
+/// method call. Only one FD parameter is allowed per method.
+///
+/// ## Receiving File Descriptors
+///
+/// Use `#[zlink(return_fds)]` on a method to indicate it returns file descriptors. The method's
+/// return type must be `Result<(Result<ReplyType, ErrorType>, Vec<OwnedFd>)>` - a tuple containing
+/// both the method result and the received file descriptors. The FDs are available regardless of
+/// whether the method succeeded or failed.
+///
+/// ## Example: File Descriptor Passing
+///
+/// File descriptors are passed out-of-band from the encoded JSON parameters. The typical pattern
+/// is to include integer indexes in your JSON parameters that reference positions in the FD
+/// vector. This is similar to how D-Bus handles FD passing.
+///
+/// ```rust
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// use zlink::proxy;
+/// use serde::{Deserialize, Serialize};
+/// use std::os::fd::OwnedFd;
+///
+/// #[proxy("org.example.FileService")]
+/// trait FileServiceProxy {
+///     // Send file descriptors to the service
+///     // The stdin/stdout parameters are indexes into the FDs vector
+///     async fn spawn_process(
+///         &mut self,
+///         command: String,
+///         stdin_fd: u32,
+///         stdout_fd: u32,
+///         #[zlink(fds)] fds: Vec<OwnedFd>,
+///     ) -> zlink::Result<Result<ProcessInfo, FileError>>;
+///
+///     // Receive file descriptors from the service
+///     // Returns metadata with FD indexes and the actual FDs
+///     #[zlink(return_fds)]
+///     async fn open_files(
+///         &mut self,
+///         paths: Vec<String>,
+///     ) -> zlink::Result<(Result<Vec<FileInfo>, FileError>, Vec<OwnedFd>)>;
+/// }
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct ProcessInfo {
+///     pid: u32,
+/// }
+///
+/// // Response contains FD indexes referencing the FD vector
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct FileInfo {
+///     path: String,
+///     fd: u32,  // Index into the FD vector (0, 1, 2, etc.)
+/// }
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// #[serde(tag = "error")]
+/// enum FileError {
+///     NotFound { path: String },
+///     PermissionDenied { path: String },
+/// }
+/// # impl std::error::Error for FileError {}
+/// # impl std::fmt::Display for FileError {
+/// #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+/// #         match self {
+/// #             FileError::NotFound { path } => write!(f, "File not found: {}", path),
+/// #             FileError::PermissionDenied { path } =>
+/// #                 write!(f, "Permission denied: {}", path),
+/// #         }
+/// #     }
+/// # }
+///
+/// // Example usage:
+/// # use std::os::unix::net::UnixStream;
+/// # use zlink::test_utils::mock_socket::MockSocket;
+/// // Sending FDs: Pass indexes as regular parameters
+/// # let (stdin_pipe, _w1) = UnixStream::pair()?;
+/// # let (stdout_pipe, _w2) = UnixStream::pair()?;
+/// # let send_response = r#"{"parameters":{"pid":1234}}"#;
+/// # let send_socket = MockSocket::with_responses(&[send_response]);
+/// # let mut send_conn = zlink::Connection::new(send_socket);
+/// let fds = vec![stdin_pipe.into(), stdout_pipe.into()];
+/// // Parameters reference FD indexes: stdin_fd=0, stdout_fd=1
+/// let result = send_conn.spawn_process("/bin/cat".to_string(), 0, 1, fds).await?;
+/// let process_info = result?;
+/// assert_eq!(process_info.pid, 1234);
+///
+/// // Receiving FDs: Response contains indexes that reference the FD vector
+/// # let (file1, _w3) = UnixStream::pair()?;
+/// # let (file2, _w4) = UnixStream::pair()?;
+/// # let recv_response = r#"{
+/// #   "parameters": [
+/// #     {"path": "/etc/config.txt", "fd": 0},
+/// #     {"path": "/var/data.bin", "fd": 1}
+/// #   ]
+/// # }"#;
+/// # let recv_fds = vec![vec![file1.into(), file2.into()]];
+/// # let recv_socket = MockSocket::new(&[recv_response], recv_fds);
+/// # let mut recv_conn = zlink::Connection::new(recv_socket);
+/// let (result, received_fds) = recv_conn
+///     .open_files(vec!["/etc/config.txt".to_string(), "/var/data.bin".to_string()])
+///     .await?;
+/// let file_list = result?;
+/// assert_eq!(file_list.len(), 2);
+/// assert_eq!(received_fds.len(), 2);
+/// // Use the fd field to match file info with actual FDs
+/// for file_info in &file_list {
+///     let fd = &received_fds[file_info.fd as usize];
+///     println!("File {} has FD at index {}", file_info.path, file_info.fd);
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # }).unwrap();
+/// ```
+///
+/// ## Parameter Renaming
+///
+/// Use `#[zlink(rename = "name")]` on parameters to customize their serialized names in the
+/// Varlink protocol. This is useful when the Rust parameter name doesn't match the expected
+/// Varlink parameter name.
+///
+/// ```rust
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// # use zlink::proxy;
+/// # use serde::{Deserialize, Serialize};
+/// #[proxy("org.example.Users")]
+/// trait UsersProxy {
+///     async fn create_user(
+///         &mut self,
+///         #[zlink(rename = "user_name")] name: String,
+///         #[zlink(rename = "user_email")] email: String,
+///     ) -> zlink::Result<Result<UserId, UserError>>;
+/// }
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct UserId { id: u32 }
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # #[serde(tag = "error")]
+/// # enum UserError { InvalidInput }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # }).unwrap();
+/// ```
+///
 /// # Generic Parameters
 ///
 /// The proxy macro supports generic type parameters on individual methods. Note that generic
