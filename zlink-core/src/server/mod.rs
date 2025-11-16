@@ -7,10 +7,7 @@ use futures_util::{FutureExt, StreamExt};
 use select_all::SelectAll;
 use service::MethodReply;
 
-use crate::{
-    connection::{Socket, WriteConnection},
-    Call, Connection, Reply,
-};
+use crate::{connection::Socket, Call, Connection, Reply};
 
 /// A server.
 ///
@@ -92,7 +89,7 @@ where
                         let mut remove = true;
                         match call {
                             Ok(call) => {
-                                match self.handle_call(call, connections[idx].write_mut()).await {
+                                match self.handle_call(call, &mut connections[idx]).await {
                                     Ok(None) => remove = false,
                                     Ok(Some(s)) => stream = Some(s),
                                     Err(e) => warn!("Error writing to connection: {:?}", e),
@@ -119,7 +116,6 @@ where
                         Some(reply) => {
                             if let Err(e) = reply_streams[idx]
                                 .conn
-                                .write_mut()
                                 .send_reply(&reply, vec![])
                                 .await
                             {
@@ -151,10 +147,7 @@ where
         connections: &'r mut [Connection<Listener::Socket>],
         start_index: Option<usize>,
     ) -> crate::Result<(usize, crate::Result<Call<Service::MethodCall<'r>>>)> {
-        let mut read_futures: Vec<_> = connections
-            .iter_mut()
-            .map(|c| c.read_mut().receive_call())
-            .collect();
+        let mut read_futures: Vec<_> = connections.iter_mut().map(|c| c.receive_call()).collect();
         let mut select_all = SelectAll::new(start_index);
         for future in &mut read_futures {
             // Safety: `future` is in fact `Unpin` but the compiler doesn't know that.
@@ -171,17 +164,17 @@ where
     async fn handle_call(
         &mut self,
         call: Call<Service::MethodCall<'_>>,
-        writer: &mut WriteConnection<<Listener::Socket as Socket>::WriteHalf>,
+        conn: &mut Connection<Listener::Socket>,
     ) -> crate::Result<Option<Service::ReplyStream>> {
         let mut stream = None;
         match self.service.handle(call).await {
             MethodReply::Single(params) => {
                 let reply = Reply::new(params).set_continues(Some(false));
-                writer.send_reply(&reply, vec![]).await?
+                conn.send_reply(&reply, vec![]).await?
             }
-            MethodReply::Error(err) => writer.send_error(&err, vec![]).await?,
+            MethodReply::Error(err) => conn.send_error(&err, vec![]).await?,
             MethodReply::Multi(s) => {
-                trace!("Client {} now turning into a reply stream", writer.id());
+                trace!("Client {} now turning into a reply stream", conn.id());
                 stream = Some(s)
             }
         }
