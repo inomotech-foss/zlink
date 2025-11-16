@@ -59,6 +59,7 @@ use tokio::{select, sync::oneshot, fs::remove_file};
 use zlink::{
     proxy,
     service::{MethodReply, Service},
+    connection::{Connection, Socket},
     unix, Call, ReplyError, Server,
 };
 
@@ -195,9 +196,10 @@ impl Service for Calculator {
     type ReplyStream = futures_util::stream::Empty<zlink::Reply<()>>;
     type ReplyError<'ser> = CalculatorError<'ser>;
 
-    async fn handle(
+    async fn handle<Sock: Socket>(
         &mut self,
         call: Call<Self::MethodCall<'_>>,
+        conn: &mut Connection<Sock>,
     ) -> MethodReply<Self::ReplyParams<'_>, Self::ReplyStream, Self::ReplyError<'_>> {
         match call.method() {
             CalculatorMethod::Add { a, b } => {

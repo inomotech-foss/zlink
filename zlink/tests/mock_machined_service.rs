@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_prefix_all::prefix_all;
 use std::vec::Vec;
 use zlink::{
+    connection::Socket,
     idl::{self, Comment, Interface, Parameter},
     introspect::{self, CustomType, ReplyError as _, Type},
     service::MethodReply,
     varlink_service::{self, Error, Info, InterfaceDescription},
-    Call, ReplyError, Service,
+    Call, Connection, ReplyError, Service,
 };
 
 /// Mock systemd-machined service that serves hardcoded responses.
@@ -203,9 +204,10 @@ impl Service for MockMachinedService {
     type ReplyStreamParams = ();
     type ReplyError<'ser> = MockError;
 
-    async fn handle<'ser>(
+    async fn handle<'ser, Sock: Socket>(
         &'ser mut self,
         call: Call<Self::MethodCall<'_>>,
+        _conn: &mut Connection<Sock>,
     ) -> MethodReply<Self::ReplyParams<'ser>, Self::ReplyStream, Self::ReplyError<'ser>> {
         match call.method() {
             Method::VarlinkService(varlink_service::Method::GetInfo) => {
