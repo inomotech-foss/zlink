@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_prefix_all::prefix_all;
 use tokio::{select, time::sleep};
 use zlink::{
+    connection::Socket,
     idl::Interface,
     introspect::{self, CustomType, ReplyError as _, Type},
     notified,
@@ -16,7 +17,7 @@ use zlink::{
         self, Info, InterfaceDescription, Method as VarlinkSrvMethod, Proxy as _,
         Reply as VarlinkSrvReply,
     },
-    Call, Service,
+    Call, Connection, Service,
 };
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
@@ -233,9 +234,10 @@ impl Service for Ftl {
     type ReplyStreamParams = FtlReply;
     type ReplyError<'ser> = ReplyError;
 
-    async fn handle<'ser>(
+    async fn handle<'ser, Sock: Socket>(
         &'ser mut self,
         call: Call<Self::MethodCall<'_>>,
+        _conn: &mut Connection<Sock>,
     ) -> MethodReply<Self::ReplyParams<'ser>, Self::ReplyStream, Self::ReplyError<'ser>> {
         match call.method() {
             Method::Ftl(FtlMethod::GetDriveCondition) if call.more() => {

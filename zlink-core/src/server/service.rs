@@ -5,7 +5,7 @@ use core::{fmt::Debug, future::Future};
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 
-use crate::{Call, Reply};
+use crate::{connection::Socket, Call, Connection, Reply};
 
 /// Service trait for handling method calls.
 pub trait Service {
@@ -41,9 +41,10 @@ pub trait Service {
         Self: 'ser;
 
     /// Handle a method call.
-    fn handle<'ser>(
+    fn handle<'ser, Sock: Socket>(
         &'ser mut self,
         method: Call<Self::MethodCall<'_>>,
+        conn: &mut Connection<Sock>,
     ) -> impl Future<
         Output = MethodReply<Self::ReplyParams<'ser>, Self::ReplyStream, Self::ReplyError<'ser>>,
     >;
