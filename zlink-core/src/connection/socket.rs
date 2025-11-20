@@ -68,6 +68,39 @@ pub trait WriteHalf: core::fmt::Debug {
     ) -> impl Future<Output = crate::Result<()>>;
 }
 
+/// Trait for fetching peer credentials from a socket.
+///
+/// This trait provides the low-level capability to fetch credentials from a socket's underlying
+/// file descriptor. It is typically implemented by socket read halves that support credentials.
+#[cfg(feature = "std")]
+pub trait FetchPeerCredentials {
+    /// Fetch the peer credentials for this socket.
+    ///
+    /// This is the low-level method that socket implementations should override to provide peer
+    /// credentials. Higher-level APIs should use [`super::Connection::peer_credentials`] instead.
+    fn fetch_peer_credentials(&self) -> impl Future<Output = std::io::Result<super::Credentials>>;
+}
+
+/// Trait for Unix Domain Sockets.
+///
+/// Implementing this trait signals that the type is a Unix Domain Socket (UDS) where credentials
+/// fetching through a file descriptor will work correctly. [`FetchPeerCredentials`] is implemented
+/// for all types that implement this trait.
+#[cfg(feature = "std")]
+pub trait UnixSocket: AsFd {}
+
+#[cfg(feature = "std")]
+impl<T> FetchPeerCredentials for T
+where
+    T: UnixSocket,
+{
+    async fn fetch_peer_credentials(&self) -> std::io::Result<super::Credentials> {
+        // Assume peer credentials fetching never blocks so it's fine to call this synchronous
+        // method from an async context.
+        crate::unix_utils::get_peer_credentials(self)
+    }
+}
+
 /// Documentation-only socket implementations for doc tests.
 ///
 /// These types exist only to make doc tests compile and should never be used in real code.

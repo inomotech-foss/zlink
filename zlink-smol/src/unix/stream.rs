@@ -49,6 +49,14 @@ impl From<Async<StdUnixStream>> for Stream {
     }
 }
 
+impl AsFd for Stream {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl socket::UnixSocket for Stream {}
+
 /// The [`ReadHalf`] implementation using Unix Domain Sockets.
 #[derive(Debug)]
 pub struct ReadHalf(Arc<Async<StdUnixStream>>);
@@ -72,6 +80,14 @@ impl socket::ReadHalf for ReadHalf {
         .await
     }
 }
+
+impl AsFd for ReadHalf {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_ref().as_fd()
+    }
+}
+
+impl socket::UnixSocket for ReadHalf {}
 
 /// The [`WriteHalf`] implementation using Unix Domain Sockets.
 #[derive(Debug)]
@@ -109,3 +125,11 @@ impl socket::WriteHalf for WriteHalf {
         Ok(())
     }
 }
+
+impl AsFd for WriteHalf {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_ref().as_fd()
+    }
+}
+
+impl socket::UnixSocket for WriteHalf {}
