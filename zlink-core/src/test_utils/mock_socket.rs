@@ -166,13 +166,21 @@ impl ReadHalf for MockReadHalf {
 impl connection::socket::FetchPeerCredentials for MockReadHalf {
     async fn fetch_peer_credentials(&self) -> std::io::Result<connection::Credentials> {
         // For mock sockets, return credentials of the current process.
-        use rustix::process::PidfdFlags;
-
         let uid = rustix::process::getuid();
         let pid = rustix::process::getpid();
-        let process_fd = rustix::process::pidfd_open(pid, PidfdFlags::empty())?;
 
-        Ok(connection::Credentials::new(uid, pid, process_fd))
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::process::PidfdFlags;
+
+            let process_fd = rustix::process::pidfd_open(pid, PidfdFlags::empty())?;
+            Ok(connection::Credentials::new(uid, pid, process_fd))
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(connection::Credentials::new(uid, pid))
+        }
     }
 }
 
