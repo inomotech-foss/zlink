@@ -9,7 +9,7 @@ repository.workspace = true
 
 [features]
 default = ["std", "proxy", "tracing"]
-std = ["dep:rustix", "zlink-macros/std"]
+std = ["dep:rustix", "dep:libc", "zlink-macros/std"]
 proxy = ["zlink-macros/proxy"]
 # IDL and introspection support
 idl = []
@@ -46,6 +46,7 @@ rustix = { version = "1.1.2", default-features = false, features = [
     "std",
     "fs",
 ], optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 serde = { version = "1.0.218", default-features = false, features = ["alloc"] }
