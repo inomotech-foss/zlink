@@ -2142,6 +2142,7 @@ dependencies = [
  "clap",
  "colored 3.0.0",
  "futures-util",
+ "rustix",
  "serde",
  "serde-prefix-all",
  "serde_json",
