@@ -9,6 +9,8 @@ use std::{
     os::fd::{AsFd, BorrowedFd, OwnedFd},
 };
 
+use crate::connection::Credentials;
+
 /// Receive a message from a Unix socket, including any file descriptors.
 ///
 /// This is a low-level helper that performs the `recvmsg` syscall.
@@ -55,6 +57,210 @@ pub fn sendmsg(fd: impl AsFd, buf: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<
 
     let iov = [IoSlice::new(buf)];
     sendmsg(fd.as_fd(), &iov, &mut control, SendFlags::empty()).map_err(io::Error::from)
+}
+
+/// Get the peer credentials from a Unix socket.
+///
+/// This is a low-level helper that fetches credentials using platform-specific APIs.
+///
+/// # Platform Support
+///
+/// - **Linux/Android**: Uses `SO_PEERCRED` to get uid and pid. On Linux, also gets `SO_PEERPIDFD`
+///   for process FD (falls back to `pidfd_open` if not available).
+/// - **macOS/iOS**: Uses `getpeereid()` for uid and `LOCAL_PEERPID` for pid.
+/// - **OpenBSD**: Uses `getpeereid()` for uid and `SO_PEERCRED` for pid.
+/// - **NetBSD**: Uses `getpeereid()` for uid and `LOCAL_PEEREID` for pid.
+/// - **FreeBSD/DragonFly**: Uses `getpeereid()` for uid. PID is 0 (FIXME: use `LOCAL_PEERCRED`).
+pub(crate) fn get_peer_credentials(fd: impl AsFd) -> io::Result<Credentials> {
+    use std::os::fd::AsRawFd;
+
+    let fd = fd.as_fd();
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    {
+        use std::os::fd::FromRawFd;
+        // Get SO_PEERCRED (uid, gid, pid).
+        let ucred = rustix::net::sockopt::socket_peercred(fd)?;
+        let uid = ucred.uid;
+        let pid = ucred.pid;
+
+        // Get SO_PEERPIDFD if available (Linux-only).
+        #[cfg(target_os = "linux")]
+        let process_fd = {
+            // FIXME: Replace `libc` usage with `rustix` API when it provides SO_PEERPIDFD
+            // sockopt: https://github.com/bytecodealliance/rustix/pull/1474
+            use core::mem::{size_of, MaybeUninit};
+
+            let mut pidfd = MaybeUninit::<libc::c_int>::zeroed();
+            let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+
+            let ret = unsafe {
+                libc::getsockopt(
+                    fd.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERPIDFD,
+                    pidfd.as_mut_ptr().cast(),
+                    &mut len,
+                )
+            };
+
+            // `getsockopt` returns `0` on success or `-1` on error.
+            if ret == 0 {
+                let pidfd = unsafe { pidfd.assume_init() };
+                unsafe { OwnedFd::from_raw_fd(pidfd) }
+            } else {
+                let err = io::Error::last_os_error();
+                // ENOPROTOOPT means the kernel doesn't support this feature.
+                if err.raw_os_error() != Some(libc::ENOPROTOOPT) {
+                    return Err(err);
+                }
+                // If SO_PEERPIDFD is not supported, we fall back to using pidfd_open.
+                rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())?
+            }
+        };
+
+        #[cfg(target_os = "android")]
+        let creds = Credentials::new(uid, pid);
+        #[cfg(target_os = "linux")]
+        let creds = Credentials::new(uid, pid, process_fd);
+
+        Ok(creds)
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    {
+        // FIXME: Replace with rustix API when it provides the required API:
+        // https://github.com/bytecodealliance/rustix/issues/1533
+        let mut uid: libc::uid_t = 0;
+        let mut gid: libc::gid_t = 0;
+
+        let ret = unsafe { libc::getpeereid(fd.as_raw_fd(), &mut uid, &mut gid) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let uid = rustix::process::Uid::from_raw(uid);
+
+        // Platform-specific PID fetching.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let pid = {
+            let mut pid: libc::pid_t = 0;
+            let mut len = core::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+
+            let ret = unsafe {
+                libc::getsockopt(
+                    fd.as_raw_fd(),
+                    libc::SOL_LOCAL,
+                    libc::LOCAL_PEERPID,
+                    (&raw mut pid).cast(),
+                    &mut len,
+                )
+            };
+
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            rustix::process::Pid::from_raw(pid)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid peer PID"))?
+        };
+
+        #[cfg(target_os = "openbsd")]
+        let pid = {
+            // OpenBSD's SO_PEERCRED returns struct sockpeercred { uid, gid, pid }.
+            #[repr(C)]
+            struct sockpeercred {
+                uid: libc::uid_t,
+                gid: libc::gid_t,
+                pid: libc::pid_t,
+            }
+
+            let mut creds = core::mem::MaybeUninit::<sockpeercred>::zeroed();
+            let mut len = core::mem::size_of::<sockpeercred>() as libc::socklen_t;
+
+            let ret = unsafe {
+                libc::getsockopt(
+                    fd.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    creds.as_mut_ptr().cast(),
+                    &mut len,
+                )
+            };
+
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let creds = unsafe { creds.assume_init() };
+            rustix::process::Pid::from_raw(creds.pid)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid peer PID"))?
+        };
+
+        #[cfg(target_os = "netbsd")]
+        let pid = {
+            // NetBSD's LOCAL_PEEREID returns struct unpcbid { pid, euid, egid }.
+            #[repr(C)]
+            struct unpcbid {
+                unp_pid: libc::pid_t,
+                unp_euid: libc::uid_t,
+                unp_egid: libc::gid_t,
+            }
+
+            const LOCAL_PEEREID: libc::c_int = 3;
+
+            let mut creds = core::mem::MaybeUninit::<unpcbid>::zeroed();
+            let mut len = core::mem::size_of::<unpcbid>() as libc::socklen_t;
+
+            let ret = unsafe {
+                libc::getsockopt(
+                    fd.as_raw_fd(),
+                    0, // SOL_LOCAL
+                    LOCAL_PEEREID,
+                    creds.as_mut_ptr().cast(),
+                    &mut len,
+                )
+            };
+
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let creds = unsafe { creds.assume_init() };
+            rustix::process::Pid::from_raw(creds.unp_pid)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid peer PID"))?
+        };
+
+        // FIXME: FreeBSD 13+ has cr_pid in xucred, DragonFly status unknown.
+        #[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
+        let pid = rustix::process::Pid::from_raw(0).unwrap();
+
+        Ok(Credentials::new(uid, pid))
+    }
+
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "peer credentials not supported on this platform",
+        ))
+    }
 }
 
 /// The maximum number of file descriptors that can be sent in a single message.

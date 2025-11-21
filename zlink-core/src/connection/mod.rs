@@ -1,7 +1,13 @@
 //! Contains connection related API.
 
+#[cfg(feature = "std")]
+mod credentials;
 mod read_connection;
+#[cfg(feature = "std")]
+pub use credentials::Credentials;
 pub use read_connection::ReadConnection;
+#[cfg(feature = "std")]
+pub use rustix::{process::Pid, process::Uid};
 pub mod chain;
 pub mod socket;
 #[cfg(test)]
@@ -15,6 +21,8 @@ use crate::{
 use alloc::vec;
 pub use chain::Chain;
 use core::{fmt::Debug, sync::atomic::AtomicUsize};
+#[cfg(feature = "std")]
+use socket::FetchPeerCredentials;
 pub use write_connection::WriteConnection;
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +50,8 @@ type RecvResult<T> = T;
 pub struct Connection<S: Socket> {
     read: ReadConnection<S::ReadHalf>,
     write: WriteConnection<S::WriteHalf>,
+    #[cfg(feature = "std")]
+    credentials: Option<std::sync::Arc<Credentials>>,
 }
 
 impl<S> Connection<S>
@@ -55,6 +65,8 @@ where
         Self {
             read: ReadConnection::new(read, id),
             write: WriteConnection::new(write, id),
+            #[cfg(feature = "std")]
+            credentials: None,
         }
     }
 
@@ -79,13 +91,21 @@ where
     }
 
     /// Split the connection into read and write halves.
+    ///
+    /// Note: This consumes any cached credentials. If you need the credentials after splitting,
+    /// call [`Connection::peer_credentials`] before splitting.
     pub fn split(self) -> (ReadConnection<S::ReadHalf>, WriteConnection<S::WriteHalf>) {
         (self.read, self.write)
     }
 
     /// Join the read and write halves into a connection (the opposite of [`Connection::split`]).
     pub fn join(read: ReadConnection<S::ReadHalf>, write: WriteConnection<S::WriteHalf>) -> Self {
-        Self { read, write }
+        Self {
+            read,
+            write,
+            #[cfg(feature = "std")]
+            credentials: None,
+        }
     }
 
     /// The unique identifier of the connection.
@@ -398,6 +418,24 @@ where
             #[cfg(feature = "std")]
             fds,
         )
+    }
+
+    /// Get the peer credentials.
+    ///
+    /// This method caches the credentials on the first call.
+    #[cfg(feature = "std")]
+    pub async fn peer_credentials(&mut self) -> std::io::Result<&std::sync::Arc<Credentials>>
+    where
+        S::ReadHalf: socket::FetchPeerCredentials,
+    {
+        if self.credentials.is_none() {
+            let creds = self.read.read_half().fetch_peer_credentials().await?;
+            self.credentials = Some(std::sync::Arc::new(creds));
+        }
+
+        // Safety: `unwrap` won't panic because we ensure above that it's set correctly if the
+        // method doesn't error out.
+        Ok(self.credentials.as_ref().unwrap())
     }
 }
 
