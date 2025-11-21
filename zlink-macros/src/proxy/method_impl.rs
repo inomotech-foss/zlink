@@ -6,8 +6,8 @@ use syn::{punctuated::Punctuated, Error, FnArg, Pat, Type};
 use super::{
     types::{ArgInfo, MethodAttrs},
     utils::{
-        collect_used_type_params, convert_to_single_lifetime, extract_param_rename_attr,
-        parse_return_type, snake_case_to_pascal_case, type_contains_lifetime,
+        collect_used_type_params, convert_to_single_lifetime, parse_return_type,
+        snake_case_to_pascal_case, type_contains_lifetime, ParamAttrs,
     },
 };
 use crate::utils::is_option_type;
