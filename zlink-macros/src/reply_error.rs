@@ -2,9 +2,9 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_quote, Data, DataEnum, DeriveInput, Error, Fields, FieldsNamed};
 
-use crate::utils::*;
+use crate::utils::{convert_type_lifetimes, parse_zlink_string_attr};
 
-/// Main entry point for the ReplyError derive macro that generates serde implementations.
+/// Main entry point for the `ReplyError` derive macro that generates serde implementations.
 ///
 /// This macro:
 /// 1. Generates manual `serde::Serialize` implementation for qualified error names
@@ -77,7 +77,7 @@ fn parse_interface_from_attrs(attrs: &[syn::Attribute]) -> Result<String, Error>
     ))
 }
 
-/// Validate that enum variants are supported by the ReplyError derive macro.
+/// Validate that enum variants are supported by the `ReplyError` derive macro.
 fn validate_enum_variants(data_enum: &DataEnum) -> Result<(), Error> {
     for variant in &data_enum.variants {
         match &variant.fields {

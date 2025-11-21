@@ -173,8 +173,8 @@ pub(crate) fn remove_lifetimes_from_type(ty: &Type) -> Type {
     }
 }
 
-/// Check if a type is Option<T>.
-/// Handles Option, std::option::Option, and core::option::Option.
+/// Check if a type is `Option<T>`.
+/// Handles `Option`, `std::option::Option`, and `core::option::Option`.
 pub(crate) fn is_option_type(ty: &Type) -> bool {
     let Type::Path(type_path) = ty else {
         return false;
@@ -276,7 +276,7 @@ pub(crate) fn convert_type_lifetimes(ty: &Type, target_lifetime: &str) -> Type {
 /// For example, parse `#[zlink(rename = "new_name")]` by calling with key "rename".
 /// Returns None if the attribute or key is not found.
 ///
-/// This is used by both reply_error and proxy modules for parsing rename attributes.
+/// This is used by both `reply_error` and `proxy` modules for parsing rename attributes.
 pub(crate) fn parse_zlink_string_attr(attrs: &[Attribute], key: &str) -> Option<String> {
     for attr in attrs {
         if !attr.path().is_ident("zlink") {
