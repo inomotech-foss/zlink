@@ -118,7 +118,8 @@ async fn machine_proxy() {
 
         // List a specific machine by name.
         let machine_name = ".host";
-        let machine = conn.list(machine_name, None, None, None).await??;
+        // TODO: had to add unwrap() here because the error is now tied to the connection lifetime.
+        let machine = conn.list(machine_name, None, None, None).await?.unwrap();
         assert_eq!(machine.name, ".host");
         assert_eq!(machine.class, "host");
 
@@ -128,7 +129,8 @@ async fn machine_proxy() {
 
         let mut found_host = false;
         while let Some(res) = stream.try_next().await? {
-            let machine = res?;
+        // TODO: had to add unwrap() here because the error is now tied to the connection lifetime.
+            let machine = res.unwrap();
             if machine.name == ".host" {
                 assert_eq!(machine.class, "host");
                 found_host = true;
@@ -160,7 +162,7 @@ trait MachineProxy {
         #[zlink(rename = "allowInteractiveAuthentication")]
         allow_interactive_authentication: Option<bool>,
         #[zlink(rename = "acquireMetadata")] acquire_metadata: Option<AcquireMetadata>,
-    ) -> zlink::Result<Result<ListReply<'_>, MachinedError>>;
+    ) -> zlink::Result<Result<ListReply<'_>, MachinedError<'_>>>;
 
     #[zlink(more, rename = "List")]
     async fn list_more(
@@ -170,7 +172,7 @@ trait MachineProxy {
         #[zlink(rename = "allowInteractiveAuthentication")]
         allow_interactive_authentication: Option<bool>,
         #[zlink(rename = "acquireMetadata")] acquire_metadata: Option<AcquireMetadata>,
-    ) -> zlink::Result<impl Stream<Item = zlink::Result<Result<ListReply<'_>, MachinedError>>>>;
+    ) -> zlink::Result<impl Stream<Item = zlink::Result<Result<ListReply<'_>, MachinedError<'_>>>>>;
 }
 
 /// Run test with either real systemd service or mock service.

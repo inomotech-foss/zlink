@@ -202,11 +202,11 @@ impl Service for MockMachinedService {
     type ReplyParams<'ser> = Reply<'ser>;
     type ReplyStream = futures_util::stream::Empty<zlink::Reply<()>>;
     type ReplyStreamParams = ();
-    type ReplyError<'ser> = MockError;
+    type ReplyError<'ser> = MockError<'ser>;
 
-    async fn handle<'ser, Sock: Socket>(
+    async fn handle<'ser, 'de: 'ser, Sock: Socket>(
         &'ser mut self,
-        call: Call<Self::MethodCall<'_>>,
+        call: Call<Self::MethodCall<'de>>,
         _conn: &mut Connection<Sock>,
     ) -> MethodReply<Self::ReplyParams<'ser>, Self::ReplyStream, Self::ReplyError<'ser>> {
         match call.method() {
@@ -260,6 +260,11 @@ impl Service for MockMachinedService {
                 // For the mock, just return success (no parameters)
                 MethodReply::Single(None)
             }
+            Method::Machine(MachineMethod::Unregister { name: Some(name), .. }) => {
+                MethodReply::Error(MockError::Machined(
+                    MachinedError::NoSuchMachine { name },
+                ))
+            }
             Method::Machine(MachineMethod::Unregister { .. }) => {
                 // For the mock, just return success (no parameters)
                 MethodReply::Single(None)
@@ -292,18 +297,20 @@ impl Service for MockMachinedService {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 #[allow(unused)]
-pub enum MockError {
+pub enum MockError<'a> {
     VarlinkService(Error),
-    Machined(MachinedError),
+    Machined(MachinedError<'a>),
 }
 
 /// Errors that can be returned by the `io.systemd.Machine` interface.
 #[derive(Debug, Clone, PartialEq, ReplyError, introspect::ReplyError)]
 #[zlink(interface = "io.systemd.Machine")]
 #[allow(unused)]
-pub enum MachinedError {
+pub enum MachinedError<'a> {
     /// No matching machine currently running.
-    NoSuchMachine,
+    NoSuchMachine {
+        name: &'a str,
+    },
     /// Machine already exists.
     MachineExists,
     /// Machine does not use private networking.
@@ -320,10 +327,10 @@ pub enum MachinedError {
     NoIPC,
 }
 
-impl core::fmt::Display for MachinedError {
+impl core::fmt::Display for MachinedError<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            MachinedError::NoSuchMachine => write!(f, "No such machine"),
+            MachinedError::NoSuchMachine{name} => write!(f, "No such machine: {name}"),
             MachinedError::MachineExists => write!(f, "Machine already exists"),
             MachinedError::NoPrivateNetworking => {
                 write!(f, "Machine does not use private networking")
@@ -342,7 +349,7 @@ impl core::fmt::Display for MachinedError {
     }
 }
 
-impl core::error::Error for MachinedError {}
+impl core::error::Error for MachinedError<'_> {}
 
 const MOCK_LIST_REPLY: ListReply<'static> = ListReply {
     name: ".host",
