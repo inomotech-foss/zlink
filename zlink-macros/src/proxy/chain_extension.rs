@@ -88,7 +88,15 @@ pub(super) fn generate_chain_extension_method(
         .map(|info| {
             let name = info.name;
             let ty = &info.ty_for_params;
-            quote! { #name: #ty }
+            let serde_attrs = if let Some(ref renamed) = info.serialized_name {
+                quote! { #[serde(rename = #renamed)] }
+            } else {
+                quote! {}
+            };
+            quote! {
+                #serde_attrs
+                #name: #ty
+            }
         })
         .collect();
 
