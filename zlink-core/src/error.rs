@@ -25,7 +25,7 @@ pub enum Error {
     /// Missing required parameters.
     MissingParameters,
     /// A general service error.
-    VarlinkService(crate::varlink_service::Error),
+    VarlinkService(crate::varlink_service::Error<'static>),
 }
 
 /// The Result type for the zlink crate.

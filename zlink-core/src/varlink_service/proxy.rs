@@ -29,7 +29,7 @@ use super::{Error, Info, InterfaceDescription};
 /// # let mut conn: Connection<zlink_core::connection::socket::impl_for_doc::Socket> = todo!();
 /// // For a single interface, use the provided Reply enum directly
 /// let chain = conn
-///     .chain_get_info::<Reply<'_>, Error>()?
+///     .chain_get_info::<Reply<'_>, Error<'_>>()?
 ///     .get_interface_description("org.example.interface")?
 ///     .get_info()?;
 ///
@@ -68,15 +68,16 @@ use super::{Error, Info, InterfaceDescription};
 ///
 /// #[derive(Debug, Deserialize)]
 /// #[serde(untagged)]
-/// enum CombinedError {
-///     VarlinkService(Error),
+/// enum CombinedError<'a> {
+///     #[serde(borrow)]
+///     VarlinkService(Error<'a>),
 ///     // Add other interface error types here
-///     // OtherInterface(other_interface::Error),
+///     // OtherInterface(other_interface::Error<'a>),
 /// }
 ///
 /// // Then use the combined types for cross-interface chaining
 /// let combined_chain = conn
-///     .chain_get_info::<CombinedReply<'_>, CombinedError>()?;
+///     .chain_get_info::<CombinedReply<'_>, CombinedError<'_>>()?;
 ///     // .other_interface_method()?;  // Chain calls from other interfaces
 ///
 /// let combined_replies = combined_chain.send().await?;
@@ -121,7 +122,7 @@ pub trait Proxy {
     ///
     /// Two-layer result: outer for connection errors, inner for method errors. On success, contains
     /// service information as [`Info`].
-    async fn get_info(&mut self) -> crate::Result<core::result::Result<Info<'_>, Error>>;
+    async fn get_info(&mut self) -> crate::Result<core::result::Result<Info<'_>, Error<'_>>>;
 
     /// Get the IDL description of an interface.
     ///
@@ -137,7 +138,7 @@ pub trait Proxy {
     async fn get_interface_description(
         &mut self,
         interface: &str,
-    ) -> crate::Result<core::result::Result<InterfaceDescription<'static>, Error>>;
+    ) -> crate::Result<core::result::Result<InterfaceDescription<'static>, Error<'_>>>;
 }
 
 #[cfg(test)]
@@ -159,10 +160,10 @@ mod tests {
         // Use the provided Reply enum from the varlink service module
         use super::{super::Reply, Error};
 
-        // Test that we can create the chain APIs
-        let _chain1 = conn.chain_get_info::<Reply<'_>, Error>()?;
+        // Test that we can create the chain APIs.
+        let _chain1 = conn.chain_get_info::<Reply<'_>, Error<'_>>()?;
         let _chain2 =
-            conn.chain_get_interface_description::<Reply<'_>, Error>("org.varlink.service")?;
+            conn.chain_get_interface_description::<Reply<'_>, Error<'_>>("org.varlink.service")?;
 
         Ok(())
     }
@@ -180,9 +181,9 @@ mod tests {
 
         use super::{super::Reply, Error};
 
-        // Test that we can chain calls using extension methods and actually read replies
+        // Test that we can chain calls using extension methods and actually read replies.
         let chained = conn
-            .chain_get_info::<Reply<'_>, Error>()?
+            .chain_get_info::<Reply<'_>, Error<'_>>()?
             .get_interface_description("org.varlink.service")?
             .get_info()?;
 
