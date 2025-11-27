@@ -238,7 +238,15 @@ fn generate_method_call_creation(
             .map(|info| {
                 let name = info.name;
                 let ty = &info.ty_for_params;
-                quote! { pub #name: #ty }
+                let serde_attrs = if let Some(ref renamed) = info.serialized_name {
+                    quote! { #[serde(rename = #renamed)] }
+                } else {
+                    quote! {}
+                };
+                quote! {
+                    #serde_attrs
+                    pub #name: #ty
+                }
             })
             .collect();
 
