@@ -41,9 +41,9 @@ pub trait Service {
         Self: 'ser;
 
     /// Handle a method call.
-    fn handle<'ser, Sock: Socket>(
+    fn handle<'ser, 'de: 'ser, Sock: Socket>(
         &'ser mut self,
-        method: Call<Self::MethodCall<'_>>,
+        method: Call<Self::MethodCall<'de>>,
         conn: &mut Connection<Sock>,
     ) -> impl Future<
         Output = MethodReply<Self::ReplyParams<'ser>, Self::ReplyStream, Self::ReplyError<'ser>>,

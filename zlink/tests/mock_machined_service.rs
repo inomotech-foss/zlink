@@ -204,9 +204,9 @@ impl Service for MockMachinedService {
     type ReplyStreamParams = ();
     type ReplyError<'ser> = MockError;
 
-    async fn handle<'ser, Sock: Socket>(
+    async fn handle<'ser, 'de: 'ser, Sock: Socket>(
         &'ser mut self,
-        call: Call<Self::MethodCall<'_>>,
+        call: Call<Self::MethodCall<'de>>,
         _conn: &mut Connection<Sock>,
     ) -> MethodReply<Self::ReplyParams<'ser>, Self::ReplyStream, Self::ReplyError<'ser>> {
         match call.method() {
