@@ -2,7 +2,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_quote, Data, DataEnum, DeriveInput, Error, Fields, FieldsNamed};
 
-use crate::utils::{convert_type_lifetimes, parse_zlink_string_attr};
+use crate::utils::{convert_type_lifetimes, has_zlink_bool_attr, parse_zlink_string_attr};
 
 /// Main entry point for the `ReplyError` derive macro that generates serde implementations.
 ///
@@ -263,12 +263,20 @@ fn generate_deserialize_with_derive(
             .attrs
             .push(parse_quote!(#[serde(rename = #qualified_name)]));
 
-        // Add serde rename attributes to fields based on their serialized names.
+        // Add serde attributes to fields based on their zlink attributes.
         if let (Fields::Named(fields), Some(field_info)) = (&mut variant.fields, field_info) {
-            for (field, name_str) in fields.named.iter_mut().zip(&field_info.name_strings) {
-                // Remove zlink attributes and add serde rename with the serialized name.
+            let iter = fields
+                .named
+                .iter_mut()
+                .zip(&field_info.name_strings)
+                .zip(&field_info.borrow_flags);
+            for ((field, name_str), &borrow) in iter {
+                // Remove zlink attributes and add serde equivalents.
                 field.attrs.retain(|attr| !attr.path().is_ident("zlink"));
                 field.attrs.push(parse_quote!(#[serde(rename = #name_str)]));
+                if borrow {
+                    field.attrs.push(parse_quote!(#[serde(borrow)]));
+                }
             }
         }
     }
@@ -354,6 +362,7 @@ struct FieldInfo<'a> {
     names: Vec<&'a syn::Ident>,
     types: Vec<&'a syn::Type>,
     name_strings: Vec<String>,
+    borrow_flags: Vec<bool>,
 }
 
 impl<'a> FieldInfo<'a> {
@@ -365,22 +374,25 @@ impl<'a> FieldInfo<'a> {
             .filter_map(|f| {
                 f.ident.as_ref().map(|name| {
                     let serialized_name = Self::get_serialized_name(f, name);
-                    (name, &f.ty, serialized_name)
+                    let borrow = has_zlink_bool_attr(&f.attrs, "borrow");
+                    (name, &f.ty, serialized_name, borrow)
                 })
             })
             .collect();
 
-        let names: Vec<_> = field_data.iter().map(|(name, _, _)| *name).collect();
-        let types: Vec<_> = field_data.iter().map(|(_, ty, _)| *ty).collect();
+        let names: Vec<_> = field_data.iter().map(|(name, _, _, _)| *name).collect();
+        let types: Vec<_> = field_data.iter().map(|(_, ty, _, _)| *ty).collect();
         let name_strings: Vec<String> = field_data
             .iter()
-            .map(|(_, _, sname)| sname.clone())
+            .map(|(_, _, sname, _)| sname.clone())
             .collect();
+        let borrow_flags: Vec<bool> = field_data.iter().map(|(_, _, _, borrow)| *borrow).collect();
 
         Self {
             names,
             types,
             name_strings,
+            borrow_flags,
         }
     }
 

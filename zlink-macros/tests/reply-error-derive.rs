@@ -208,4 +208,51 @@ mod tests {
         let deserialized: TestError = serde_json::from_str(&json).unwrap();
         assert_eq!(*original, deserialized);
     }
+
+    mod zlink_borrow {
+        use std::borrow::Cow;
+
+        use zlink_macros::ReplyError;
+
+        #[derive(ReplyError, Debug, PartialEq)]
+        #[zlink(interface = "org.example.Calculator")]
+        enum CalculatorError<'a> {
+            DivisionByZero {
+                #[zlink(borrow)]
+                message: Cow<'a, str>,
+            },
+        }
+
+        #[test]
+        fn borrow_serialization() {
+            let error = CalculatorError::DivisionByZero {
+                message: Cow::Borrowed("Cannot divide by zero"),
+            };
+            let json = serde_json::to_string(&error).unwrap();
+            assert!(json.contains(r#""error":"org.example.Calculator.DivisionByZero""#));
+            assert!(json.contains(r#""message":"Cannot divide by zero""#));
+        }
+
+        #[test]
+        fn borrow_deserialization() {
+            let json = r#"{"error":"org.example.Calculator.DivisionByZero","parameters":{"message":"Cannot divide by zero"}}"#;
+            let error: CalculatorError = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                error,
+                CalculatorError::DivisionByZero {
+                    message: Cow::Borrowed("Cannot divide by zero"),
+                }
+            );
+        }
+
+        #[test]
+        fn borrow_round_trip() {
+            let original = CalculatorError::DivisionByZero {
+                message: Cow::Borrowed("Cannot divide by zero"),
+            };
+            let json = serde_json::to_string(&original).unwrap();
+            let deserialized: CalculatorError = serde_json::from_str(&json).unwrap();
+            assert_eq!(original, deserialized);
+        }
+    }
 }
