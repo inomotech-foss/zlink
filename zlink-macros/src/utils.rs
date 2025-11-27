@@ -271,6 +271,31 @@ pub(crate) fn convert_type_lifetimes(ty: &Type, target_lifetime: &str) -> Type {
     }
 }
 
+/// Check if a boolean zlink attribute with a specific key is present.
+///
+/// For example, check for `#[zlink(borrow)]` by calling with key "borrow".
+/// Returns true if the attribute is found.
+pub(crate) fn has_zlink_bool_attr(attrs: &[Attribute], key: &str) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("zlink") {
+            continue;
+        }
+
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident(key) {
+                found = true;
+            }
+            Ok(())
+        });
+
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
 /// Parse a string value from a zlink attribute with a specific key.
 ///
 /// For example, parse `#[zlink(rename = "new_name")]` by calling with key "rename".

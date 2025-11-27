@@ -1,6 +1,6 @@
 #![cfg(all(feature = "introspection", feature = "idl-parse"))]
 
-use std::{pin::pin, time::Duration};
+use std::{borrow::Cow, pin::pin, time::Duration};
 
 use futures_util::{pin_mut, stream::StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
@@ -232,7 +232,7 @@ impl Service for Ftl {
     type ReplyParams<'ser> = Reply<'ser>;
     type ReplyStream = notified::Stream<Self::ReplyStreamParams>;
     type ReplyStreamParams = FtlReply;
-    type ReplyError<'ser> = ReplyError;
+    type ReplyError<'ser> = ReplyError<'ser>;
 
     async fn handle<'ser, 'de: 'ser, Sock: Socket>(
         &'ser mut self,
@@ -297,7 +297,7 @@ impl Service for Ftl {
                     _ => {
                         return MethodReply::Error(ReplyError::VarlinkSrv(
                             varlink_service::Error::InterfaceNotFound {
-                                interface: "unknown.interface".try_into().unwrap(),
+                                interface: Cow::Borrowed(interface),
                             },
                         ))
                     }
@@ -375,9 +375,9 @@ enum Reply<'a> {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 #[allow(unused)]
-enum ReplyError {
+enum ReplyError<'a> {
     Ftl(FtlError),
-    VarlinkSrv(varlink_service::Error),
+    VarlinkSrv(varlink_service::Error<'a>),
 }
 
 //

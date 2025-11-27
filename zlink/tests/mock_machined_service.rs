@@ -202,7 +202,7 @@ impl Service for MockMachinedService {
     type ReplyParams<'ser> = Reply<'ser>;
     type ReplyStream = futures_util::stream::Empty<zlink::Reply<()>>;
     type ReplyStreamParams = ();
-    type ReplyError<'ser> = MockError;
+    type ReplyError<'ser> = MockError<'ser>;
 
     async fn handle<'ser, 'de: 'ser, Sock: Socket>(
         &'ser mut self,
@@ -246,7 +246,7 @@ impl Service for MockMachinedService {
                     _ => {
                         return MethodReply::Error(MockError::VarlinkService(
                             Error::InterfaceNotFound {
-                                interface: "unknown.interface".try_into().unwrap(),
+                                interface: Cow::Borrowed(interface),
                             },
                         ))
                     }
@@ -291,16 +291,15 @@ impl Service for MockMachinedService {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
-#[allow(unused)]
-pub enum MockError {
-    VarlinkService(Error),
+pub enum MockError<'a> {
+    VarlinkService(Error<'a>),
+    #[allow(unused)]
     Machined(MachinedError),
 }
 
 /// Errors that can be returned by the `io.systemd.Machine` interface.
 #[derive(Debug, Clone, PartialEq, ReplyError, introspect::ReplyError)]
 #[zlink(interface = "io.systemd.Machine")]
-#[allow(unused)]
 pub enum MachinedError {
     /// No matching machine currently running.
     NoSuchMachine,

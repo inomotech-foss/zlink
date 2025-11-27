@@ -97,14 +97,15 @@ impl<Read: ReadHalf> ReadConnection<Read> {
     {
         #[derive(Debug, Deserialize)]
         #[serde(untagged)]
-        enum ReplyMsg<ReplyParams, ReplyError> {
-            Varlink(varlink_service::Error),
+        enum ReplyMsg<'m, ReplyParams, ReplyError> {
+            #[serde(borrow)]
+            Varlink(varlink_service::Error<'m>),
             Error(ReplyError),
             Reply(Reply<ReplyParams>),
         }
 
         let recv_result = self
-            .read_message::<ReplyMsg<ReplyParams, ReplyError>>()
+            .read_message::<ReplyMsg<'_, ReplyParams, ReplyError>>()
             .await?;
 
         #[cfg(feature = "std")]
@@ -114,7 +115,7 @@ impl<Read: ReadHalf> ReadConnection<Read> {
 
         let result = match msg {
             // Varlink service interface error need to be returned as the top-level error.
-            ReplyMsg::Varlink(e) => Err(crate::Error::VarlinkService(e)),
+            ReplyMsg::Varlink(e) => Err(crate::Error::VarlinkService(e.into_owned())),
             ReplyMsg::Error(e) => Ok(Err(e)),
             ReplyMsg::Reply(reply) => Ok(Ok(reply)),
         };
