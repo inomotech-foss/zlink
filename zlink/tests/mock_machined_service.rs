@@ -291,16 +291,15 @@ impl Service for MockMachinedService {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
-#[allow(unused)]
 pub enum MockError {
     VarlinkService(Error),
+    #[allow(unused)]
     Machined(MachinedError),
 }
 
 /// Errors that can be returned by the `io.systemd.Machine` interface.
 #[derive(Debug, Clone, PartialEq, ReplyError, introspect::ReplyError)]
 #[zlink(interface = "io.systemd.Machine")]
-#[allow(unused)]
 pub enum MachinedError {
     /// No matching machine currently running.
     NoSuchMachine,
