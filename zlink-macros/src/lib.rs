@@ -548,8 +548,9 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 ///
 /// #[derive(Debug, Deserialize)]
 /// #[serde(untagged)]
-/// enum CombinedError {
-///     VarlinkService(varlink_service::Error),
+/// enum CombinedError<'a> {
+///     #[serde(borrow)]
+///     VarlinkService(varlink_service::Error<'a>),
 ///     MyService(MyError),
 /// }
 ///
@@ -571,7 +572,7 @@ pub fn derive_introspect_reply_error(input: proc_macro::TokenStream) -> proc_mac
 ///
 /// // Get service info and custom status in one batch
 /// let chain = conn
-///     .chain_get_info::<CombinedReply<'_>, CombinedError>()? // Varlink service interface
+///     .chain_get_info::<CombinedReply<'_>, CombinedError<'_>>()? // Varlink service interface
 ///     .get_status()?                                         // MyService interface
 ///     .get_interface_description("com.example.MyService")?;  // Back to Varlink service
 ///
@@ -850,17 +851,25 @@ pub fn proxy(
 ///
 /// # Attributes
 ///
+/// ## Enum-level attributes
+///
 /// - `interface` - This mandatory attribute specifies the Varlink interface name (e.g.,
 ///   "org.varlink.service")
+///
+/// ## Field-level attributes
+///
+/// - `rename = "..."` - Specifies a custom name for the field in the JSON representation
+/// - `borrow` - Enables zero-copy deserialization for types like `Cow<'_, str>`
 ///
 /// # Example
 ///
 /// ```rust
+/// use std::borrow::Cow;
 /// use zlink::ReplyError;
 ///
 /// #[derive(ReplyError)]
 /// #[zlink(interface = "com.example.MyService")]
-/// enum ServiceError {
+/// enum ServiceError<'a> {
 ///     // Unit variant - no parameters
 ///     NotFound,
 ///     PermissionDenied,
@@ -871,8 +880,15 @@ pub fn proxy(
 ///         reason: String,
 ///     },
 ///
-///     // Another variant with a single field
+///     // Variant with zero-copy deserialization using borrow
+///     CustomError {
+///         #[zlink(borrow)]
+///         message: Cow<'a, str>,
+///     },
+///
+///     // Variant with renamed field
 ///     Timeout {
+///         #[zlink(rename = "timeoutSeconds")]
 ///         seconds: u32,
 ///     },
 /// }
