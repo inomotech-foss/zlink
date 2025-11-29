@@ -1,4 +1,4 @@
-#![cfg(all(feature = "introspection", feature = "idl-parse"))]
+#![cfg(all(feature = "introspection", feature = "idl-parse", feature = "server"))]
 
 use std::{borrow::Cow, pin::pin, time::Duration};
 

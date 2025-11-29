@@ -6,11 +6,11 @@ mod mock_machined_service;
 
 use futures_util::{pin_mut, Stream, TryStreamExt};
 use std::path::Path;
+#[cfg(feature = "server")]
 use tempfile::TempDir;
-use tokio::{
-    select,
-    time::{timeout, Duration},
-};
+#[cfg(feature = "server")]
+use tokio::select;
+use tokio::time::{timeout, Duration};
 use zlink::{
     proxy, unix,
     varlink_service::{self, Proxy},
@@ -179,10 +179,8 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error>>>,
 {
-    if use_real_machined_service() {
-        // Use real systemd service
-        test_fn(DEFAULT_MACHINED_SOCKET.to_string()).await
-    } else {
+    #[cfg(feature = "server")]
+    if !use_real_machined_service() {
         // Create unique temporary directory and socket path for this test
         let temp_dir = TempDir::new()?;
         let socket_path = temp_dir.path().join("mock.sock");
@@ -198,16 +196,33 @@ where
             res = test_fn(socket_path.to_string_lossy().to_string()) => res?,
         }
 
-        Ok(())
+        return Ok(());
+    }
+
+    // Use real systemd service (or skip if not available and no server feature).
+    if Path::new(DEFAULT_MACHINED_SOCKET).exists() {
+        test_fn(DEFAULT_MACHINED_SOCKET.to_string()).await
+    } else {
+        #[cfg(feature = "server")]
+        unreachable!();
+        #[cfg(not(feature = "server"))]
+        {
+            eprintln!(
+                "Skipping test: real machined service not available and server feature disabled"
+            );
+            Ok(())
+        }
     }
 }
 
+#[cfg(feature = "server")]
 fn use_real_machined_service() -> bool {
     // Ensure user didn't ask for mock service to be used.
-    !std::env::var(MOCK_SERVICE_ENV_VAR).is_ok()
+    std::env::var(MOCK_SERVICE_ENV_VAR).is_err()
         && // Check if the systemd machine socket exists and is accessible.
         Path::new(DEFAULT_MACHINED_SOCKET).exists()
 }
 
 const DEFAULT_MACHINED_SOCKET: &str = "/run/systemd/machine/io.systemd.Machine";
+#[cfg(feature = "server")]
 const MOCK_SERVICE_ENV_VAR: &str = "ZLINK_MOCK_SERVICE";

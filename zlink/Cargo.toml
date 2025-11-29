@@ -8,9 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["tokio", "proxy", "tracing"]
+default = ["tokio", "server", "proxy", "tracing"]
 tokio = ["dep:zlink-tokio"]
 smol = ["dep:zlink-smol"]
+server = ["zlink-tokio?/server", "zlink-smol?/server"]
 proxy = ["zlink-tokio?/proxy", "zlink-smol?/proxy"]
 idl = ["zlink-tokio?/idl", "zlink-smol?/idl"]
 idl-parse = ["zlink-tokio?/idl-parse", "zlink-smol?/idl-parse"]
