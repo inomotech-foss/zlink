@@ -204,7 +204,7 @@ where
 
 fn use_real_machined_service() -> bool {
     // Ensure user didn't ask for mock service to be used.
-    !std::env::var(MOCK_SERVICE_ENV_VAR).is_ok()
+    std::env::var(MOCK_SERVICE_ENV_VAR).is_err()
         && // Check if the systemd machine socket exists and is accessible.
         Path::new(DEFAULT_MACHINED_SOCKET).exists()
 }
