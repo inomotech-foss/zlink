@@ -8,8 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["std", "proxy", "tracing"]
+default = ["std", "server", "proxy", "tracing"]
 std = ["dep:rustix", "dep:libc", "zlink-macros/std"]
+server = []
 proxy = ["zlink-macros/proxy"]
 # IDL and introspection support
 idl = []

@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
+server = ["zlink-core/server"]
 proxy = ["zlink-core/proxy"]
 idl = ["zlink-core/idl"]
 idl-parse = ["zlink-core/idl-parse"]

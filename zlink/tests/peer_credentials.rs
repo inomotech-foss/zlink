@@ -1,5 +1,7 @@
 //! Integration test for peer credentials functionality.
 
+#![cfg(feature = "server")]
+
 use std::os::fd::{AsFd, AsRawFd};
 use tempfile::TempDir;
 use zlink::Listener;

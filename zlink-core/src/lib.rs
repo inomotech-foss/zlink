@@ -26,9 +26,9 @@ pub mod connection;
 pub use connection::Connection;
 mod error;
 pub use error::{Error, Result};
-#[cfg(feature = "std")]
+#[cfg(feature = "server")]
 mod server;
-#[cfg(feature = "std")]
+#[cfg(feature = "server")]
 pub use server::{
     listener::Listener,
     service::{self, Service},
