@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 keywords = ["varlink", "ipc", "codegen", "idl", "generator"]
 categories = ["development-tools::build-utils", "parsing"]
+authors.workspace = true
 
 [[bin]]
 name = "zlink-codegen"
