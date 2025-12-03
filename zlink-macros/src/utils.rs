@@ -86,7 +86,7 @@ pub(crate) fn remove_lifetimes_from_type(ty: &Type) -> Type {
         Type::Path(type_path) => {
             let mut new_type_path = type_path.clone();
             if let Some(ref mut qself) = new_type_path.qself {
-                qself.ty = Box::new(remove_lifetimes_from_type(&qself.ty));
+                *qself.ty = remove_lifetimes_from_type(&qself.ty);
             }
             for segment in &mut new_type_path.path.segments {
                 match &mut segment.arguments {
@@ -119,7 +119,7 @@ pub(crate) fn remove_lifetimes_from_type(ty: &Type) -> Type {
                             *input = remove_lifetimes_from_type(input);
                         }
                         if let syn::ReturnType::Type(_, ref mut output) = args.output {
-                            *output = Box::new(remove_lifetimes_from_type(output));
+                            **output = remove_lifetimes_from_type(output);
                         }
                     }
                     PathArguments::None => {}
@@ -136,27 +136,27 @@ pub(crate) fn remove_lifetimes_from_type(ty: &Type) -> Type {
         }
         Type::Array(type_array) => {
             let mut new_type_array = type_array.clone();
-            new_type_array.elem = Box::new(remove_lifetimes_from_type(&type_array.elem));
+            *new_type_array.elem = remove_lifetimes_from_type(&type_array.elem);
             Type::Array(new_type_array)
         }
         Type::Slice(type_slice) => {
             let mut new_type_slice = type_slice.clone();
-            new_type_slice.elem = Box::new(remove_lifetimes_from_type(&type_slice.elem));
+            *new_type_slice.elem = remove_lifetimes_from_type(&type_slice.elem);
             Type::Slice(new_type_slice)
         }
         Type::Ptr(type_ptr) => {
             let mut new_type_ptr = type_ptr.clone();
-            new_type_ptr.elem = Box::new(remove_lifetimes_from_type(&type_ptr.elem));
+            *new_type_ptr.elem = remove_lifetimes_from_type(&type_ptr.elem);
             Type::Ptr(new_type_ptr)
         }
         Type::Group(type_group) => {
             let mut new_type_group = type_group.clone();
-            new_type_group.elem = Box::new(remove_lifetimes_from_type(&type_group.elem));
+            *new_type_group.elem = remove_lifetimes_from_type(&type_group.elem);
             Type::Group(new_type_group)
         }
         Type::Paren(type_paren) => {
             let mut new_type_paren = type_paren.clone();
-            new_type_paren.elem = Box::new(remove_lifetimes_from_type(&type_paren.elem));
+            *new_type_paren.elem = remove_lifetimes_from_type(&type_paren.elem);
             Type::Paren(new_type_paren)
         }
         // For types that don't contain other types or lifetimes, return as-is
